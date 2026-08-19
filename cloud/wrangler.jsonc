@@ -1,0 +1,40 @@
+{
+  // Own worker name + own D1 database. Integrates with the CRM purely over
+  // HTTPS via POST /api/lookup — nothing is shared at the infra level, so this
+  // can live under a different Cloudflare account than the CRM (see handoff §7).
+  "name": "superprofile-leadgen",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "./static"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "superprofile-leadgen",
+      // Replace with the id printed by: npx wrangler d1 create superprofile-leadgen
+      "database_id": "7700f30a-bca0-4d06-b460-45cb6ef1fd03"
+    }
+  ],
+  "vars": {
+    // Non-secret. The CRM base URL — used only as a FALLBACK when the CRM lives
+    // under a different Cloudflare account (no service binding available).
+    "CRM_URL": "https://superprofile-crm.superprofile-crm.workers.dev"
+  },
+  // Same-account Worker→Worker dispatch. Calling the CRM over its public
+  // workers.dev hostname from another Worker on the same zone gets mis-routed at
+  // the edge (arrives as a GET → 404), so we bind the CRM directly. Remove this
+  // block if the CRM ever moves to a different account (the code falls back to
+  // CRM_URL over HTTPS).
+  "services": [
+    { "binding": "CRM", "service": "superprofile-crm" }
+  ],
+  // MERGE: Instantly sync cron (every minute). Handled by scheduled() in
+  // src/worker.js → runFullSync. No-op until the INSTANTLY_API_KEY secret is set.
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

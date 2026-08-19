@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuperProfile Lead-Gen</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+</head>
+<body>
+
+<!-- Left sidebar: switch between CRM (pipeline) and Unibox (email replies).
+     Hidden until logged in; revealed by showApp(). -->
+<nav id="sidebar" style="display:none">
+  <div class="sb-logo" title="SuperProfile">SP</div>
+  <button class="sb-item active" data-view="crm" title="CRM — lead pipeline"><span class="sb-ic">📊</span><span class="sb-lbl">CRM</span></button>
+  <button class="sb-item" data-view="unibox" title="Unibox — email replies"><span class="sb-ic">📬</span><span class="sb-lbl">Unibox</span></button>
+</nav>
+<!-- Unibox = the CRM interface, same-origin, on the merged DB (shares this login). -->
+<iframe id="unibox-frame" title="Unibox" style="display:none"></iframe>
+
+<!-- Login / first-run setup -->
+<div id="login-view">
+  <div class="login-card">
+    <h1 id="login-title">Sign in</h1>
+    <div class="sub" id="login-sub">SuperProfile Lead-Gen</div>
+    <div class="login-error" id="login-error"></div>
+    <input id="login-user" placeholder="Username" autocomplete="username">
+    <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+    <input id="login-display" placeholder="Display name (e.g. Siddharth)" style="display:none">
+    <button id="login-btn" data-mode="login">Sign in</button>
+  </div>
+</div>
+
+<!-- Main app -->
+<div id="app">
+  <header>
+    <div class="logo">SuperProfile <span>Lead-Gen</span></div>
+    <div class="sync-pill"><span class="sync-dot" id="live-dot"></span><span id="live-pill">live</span></div>
+    <div class="spacer"></div>
+    <button class="hbtn" id="funnel-btn" title="Funnel analytics — where leads leak">📊 Funnel</button>
+    <button class="hbtn" id="classify-btn" title="Add or remove statuses &amp; labels">🏷 Statuses &amp; Labels</button>
+    <button class="hbtn" id="pipe-btn" title="Manage the pipeline stages &amp; labels">🧭 Pipeline</button>
+    <button class="hbtn" id="activity-btn" title="Per-member daily activity">📈 Activity</button>
+    <button class="hbtn" id="refresh-crm-btn" title="Re-check every lead against the CRM">⟳ Refresh CRM</button>
+    <button class="hbtn" id="master-btn" title="Upload / refresh the master username list">📄 Master list</button>
+    <button class="hbtn" id="team-btn" style="display:none">👥 Team</button>
+    <span id="who" class="who"></span>
+    <button class="hbtn" id="logout">Log out</button>
+  </header>
+
+  <!-- Entries list (full width) -->
+  <section class="list-panel">
+    <div class="tab-bar" id="tab-bar"></div>
+    <div class="list-head">
+      <h2 id="list-title">Today's Leads <span class="count" id="entry-count"></span></h2>
+      <div class="list-controls" id="lead-controls">
+        <button class="add-lead-btn" id="open-add-btn">＋ Add lead</button>
+        <input id="search" placeholder="Search handle, name or email…">
+        <select id="stage-filter" title="Filter by stage"><option value="">Any stage</option></select>
+        <select id="status-filter" title="Filter by status"><option value="">Any status</option></select>
+        <select id="label-filter" title="Filter by label"><option value="">Any label</option></select>
+        <select id="delivery-filter" title="Filter by delivery status" style="display:none"><option value="">Any delivery status</option></select>
+        <select id="reason-filter" title="Filter by reason for failure" style="display:none"><option value="">Any reason</option></select>
+        <select id="cat-filter"><option value="">Any category</option></select>
+        <select id="owner-filter"><option value="">Any owner</option></select>
+      </div>
+      <div class="list-controls" id="video-controls" style="display:none">
+        <input id="video-search" placeholder="Search videos (lead, country, type…)">
+        <button class="hbtn" id="add-video-btn">＋ Add video</button>
+      </div>
+    </div>
+    <div class="date-bar">
+      <span class="date-label">📅 Found between</span>
+      <input type="date" id="date-from" title="From date (IST)">
+      <span class="date-label">and</span>
+      <input type="date" id="date-to" title="To date (IST)">
+      <div class="date-presets">
+        <button class="chip" data-range="today">Today</button>
+        <button class="chip" data-range="7">Last 7d</button>
+        <button class="chip" data-range="30">Last 30d</button>
+        <button class="chip" data-range="all">All</button>
+      </div>
+      <span class="date-summary" id="date-summary"></span>
+    </div>
+    <div id="list"><div class="empty">Loading…</div></div>
+  </section>
+</div>
+
+<!-- Add lead modal -->
+<div id="add-bg" class="modal-bg">
+  <div class="modal">
+    <h3>Add a lead</h3>
+    <div class="owner-note">Lead owner: <b id="owner-name">—</b> <span class="foot-hint">(you — auto-filled)</span></div>
+    <label class="fld">First name <span class="opt">(optional)</span>
+      <input id="f-firstname" placeholder="e.g. Angelika" autocomplete="off">
+    </label>
+    <label class="fld">Instagram profile link or handle
+      <input id="f-social" placeholder="instagram.com/theirhandle  ·  @theirhandle" autocomplete="off">
+    </label>
+    <label class="fld">Lead email <span class="opt">(optional)</span>
+      <input id="f-email" type="email" placeholder="lead@example.com" autocomplete="off">
+    </label>
+    <label class="fld">Category <span class="opt">(optional)</span>
+      <div class="cat-row">
+        <select id="f-category"><option value="">— none —</option></select>
+        <button type="button" class="cat-manage" id="cat-manage-btn" title="Add or remove categories">⚙</button>
+      </div>
+    </label>
+    <label class="fld">Notes <span class="opt">(optional)</span>
+      <textarea id="f-notes" placeholder="anything worth remembering about this lead…" rows="2"></textarea>
+    </label>
+    <div id="preview" class="preview"></div>
+    <button class="add-btn" id="add-btn">Add lead</button>
+    <div class="add-msg" id="add-msg"></div>
+    <div class="row">
+      <button class="bulk-link" id="bulk-btn" style="flex:1;margin-top:0">＋ Bulk add (paste or CSV)</button>
+      <button class="note-btn" id="add-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Master upload modal -->
+<div id="master-bg" class="modal-bg">
+  <div class="modal wide">
+    <h3>Master username list</h3>
+    <div class="foot-hint" id="master-stats">—</div>
+    <div class="drop" id="drop">
+      <div class="drop-inner">
+        <div class="drop-title">Drop a CSV / TSV file here, or click to choose</div>
+        <div class="foot-hint">Any column holding an Instagram handle or profile URL is used (auto-detected:
+          <code>username</code>, <code>handle</code>, <code>instagram</code>, <code>profile</code>, <code>url</code>…).
+          An optional <code>email</code> column is stored too. Excel: export the sheet as CSV first.</div>
+        <input type="file" id="file-input" accept=".csv,.tsv,.txt" hidden>
+      </div>
+    </div>
+    <div id="master-preview" class="master-preview"></div>
+    <div class="row master-mode" id="master-mode-row" style="display:none">
+      <label><input type="radio" name="mmode" value="merge" checked> Merge (add / update)</label>
+      <label><input type="radio" name="mmode" value="replace"> Replace (wipe &amp; reload)</label>
+    </div>
+    <div class="row">
+      <button class="send" id="master-import" style="flex:1" disabled>Import</button>
+      <button class="note-btn" id="master-close">Close</button>
+    </div>
+    <div class="add-msg" id="master-msg"></div>
+  </div>
+</div>
+
+<!-- Bulk add modal -->
+<div id="bulk-bg" class="modal-bg">
+  <div class="modal wide">
+    <h3>Bulk add leads</h3>
+    <div class="foot-hint">Paste rows (one lead per line: <code>handle, email</code> — or a full Instagram URL),
+      or drop a CSV/TSV. With a header row, <code>first_name</code>/<code>name</code> and <code>notes</code> columns
+      are picked up too. Every row runs the same username dedup + CRM prior-conversation check. Lead owner =
+      <b id="bulk-owner">you</b>. Max 500 rows.</div>
+    <textarea id="bulk-text" placeholder="handle, email&#10;theirhandle, lead@example.com&#10;instagram.com/anotherhandle, other@example.com&#10;@thirdhandle"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="note-btn" id="bulk-file-btn">Choose CSV/TSV…</button>
+      <input type="file" id="bulk-file" accept=".csv,.tsv,.txt" hidden>
+      <span class="foot-hint" id="bulk-parsed" style="align-self:center"></span>
+    </div>
+    <div id="bulk-report" class="bulk-report"></div>
+    <div class="row">
+      <button class="send" id="bulk-run" style="flex:1">Check &amp; add</button>
+      <button class="note-btn" id="bulk-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit lead modal -->
+<div id="edit-bg" class="modal-bg">
+  <div class="modal">
+    <h3>Edit lead</h3>
+    <div class="foot-hint" id="edit-sub">Any teammate can edit any lead.</div>
+    <input type="hidden" id="e-id">
+    <label class="fld">Lead owner <span class="opt">(this platform)</span>
+      <input id="e-owner" placeholder="who owns this lead" autocomplete="off">
+    </label>
+    <div class="fld">CRM POC <span class="opt">(from the CRM — read-only)</span>
+      <div id="e-crm-poc" class="readonly-val">—</div>
+    </div>
+    <label class="fld">First name
+      <input id="e-firstname" placeholder="e.g. Angelika" autocomplete="off">
+    </label>
+    <label class="fld">Instagram handle or link
+      <input id="e-social" placeholder="@handle or instagram.com/handle" autocomplete="off">
+    </label>
+    <label class="fld">Email
+      <input id="e-email" type="email" placeholder="lead@example.com" autocomplete="off">
+    </label>
+    <label class="fld">Category
+      <div class="cat-row">
+        <select id="e-category"><option value="">— none —</option></select>
+        <button type="button" class="cat-manage" id="e-cat-manage-btn" title="Add or remove categories">⚙</button>
+      </div>
+    </label>
+    <label class="fld">Notes
+      <textarea id="e-notes" rows="3" placeholder="notes…"></textarea>
+    </label>
+    <div class="add-msg" id="edit-msg"></div>
+    <div class="row">
+      <button class="send" id="edit-save" style="flex:1">Save changes</button>
+      <button class="note-btn" id="edit-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Categories manage modal -->
+<div id="cat-bg" class="modal-bg">
+  <div class="modal">
+    <h3>Categories</h3>
+    <div class="foot-hint">Shared across the team — anyone can add or remove. Deleting one leaves existing leads' category text intact.</div>
+    <div id="cat-list" style="margin:12px 0"></div>
+    <div class="row">
+      <input id="cat-new" placeholder="New category name" style="flex:1">
+      <button class="note-btn" id="cat-add">Add</button>
+    </div>
+    <div class="add-msg" id="cat-msg"></div>
+    <div class="row"><button class="note-btn" id="cat-close" style="flex:1">Close</button></div>
+  </div>
+</div>
+
+<!-- Manage statuses & labels modal -->
+<div id="classify-bg" class="modal-bg">
+  <div class="modal">
+    <h3>Statuses &amp; Labels</h3>
+    <div class="foot-hint">Shared across the team. These fill the Status and Label dropdowns everywhere. Deleting one clears it from any lead currently using it.</div>
+    <h4 style="margin:14px 0 6px">Statuses</h4>
+    <div id="cl-status-list"></div>
+    <div class="row">
+      <input id="cl-status-new" placeholder="New status name" style="flex:1">
+      <button class="note-btn" id="cl-status-add">Add</button>
+    </div>
+    <h4 style="margin:16px 0 6px">Labels</h4>
+    <div id="cl-label-list"></div>
+    <div class="row">
+      <input id="cl-label-new" placeholder="New label name" style="flex:1">
+      <button class="note-btn" id="cl-label-add">Add</button>
+    </div>
+    <h4 style="margin:16px 0 6px">Delivery statuses <span class="opt">(Closed tab)</span></h4>
+    <div id="cl-deliv-list"></div>
+    <div class="row">
+      <input id="cl-deliv-new" placeholder="New delivery status" style="flex:1">
+      <button class="note-btn" id="cl-deliv-add">Add</button>
+    </div>
+    <h4 style="margin:16px 0 6px">Failure reasons <span class="opt">(Failed tab)</span></h4>
+    <div id="cl-reason-list"></div>
+    <div class="row">
+      <input id="cl-reason-new" placeholder="New failure reason" style="flex:1">
+      <button class="note-btn" id="cl-reason-add">Add</button>
+    </div>
+    <div class="add-msg" id="cl-msg"></div>
+    <div class="row"><button class="note-btn" id="cl-close" style="flex:1">Close</button></div>
+  </div>
+</div>
+
+<!-- Manage pipeline modal -->
+<div id="pipe-bg" class="modal-bg">
+  <div class="modal wide">
+    <h3>Pipeline stages &amp; labels</h3>
+    <div class="foot-hint">The 4 <b>Stages</b> (Leads · Responses · Closed · Failed) are fixed. Everything under them — statuses, labels, sub-labels — is editable by anyone. A lead sits at exactly one node; its breadcrumb shows the full path. Deleting a node moves any leads on it up to its parent.</div>
+    <div id="pipe-tree" class="pipe-tree"></div>
+    <div class="pipe-add">
+      <div class="pipe-add-row">
+        <select id="pipe-stage-sel" title="Stage"></select>
+        <select id="pipe-parent-sel" title="Add under (parent)"></select>
+      </div>
+      <div class="pipe-add-row">
+        <input id="pipe-new" placeholder="New status / label name" style="flex:1">
+        <button class="note-btn" id="pipe-add">Add</button>
+      </div>
+    </div>
+    <div class="add-msg" id="pipe-msg"></div>
+    <div class="row"><button class="note-btn" id="pipe-close" style="flex:1">Close</button></div>
+  </div>
+</div>
+
+<!-- Close lead modal -->
+<div id="close-bg" class="modal-bg">
+  <div class="modal">
+    <h3>Mark as Closed <span class="foot-hint" id="close-who"></span></h3>
+    <input type="hidden" id="cl-id">
+    <label class="fld">Delivery status
+      <select id="cl-delivstatus"><option value="">— select —</option></select>
+    </label>
+    <label class="fld">Closing Date <input id="cl-date" type="date"></label>
+    <label class="fld">Closing Rate <span class="opt">(total, USD)</span> <input id="cl-rate" placeholder="e.g. 500"></label>
+    <label class="fld">Closed on Retainer
+      <select id="cl-retainer"><option value="">—</option><option>Yes</option><option>No</option></select>
+    </label>
+    <label class="fld">Retainer Start Date <input id="cl-rstart" type="date"></label>
+    <label class="fld">Retainer Duration (months) <input id="cl-rmonths" type="text" inputmode="numeric" placeholder="e.g. 6"></label>
+    <label class="fld">Deliverables <input id="cl-deliv" placeholder="e.g. 2 reels + 1 story"></label>
+    <div class="add-msg" id="close-msg"></div>
+    <div class="row">
+      <button class="send" id="cl-save" style="flex:1">Mark Closed</button>
+      <button class="note-btn" id="cl-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Failed lead modal -->
+<div id="fail-bg" class="modal-bg">
+  <div class="modal">
+    <h3>Mark as Failed <span class="foot-hint" id="fail-who"></span></h3>
+    <input type="hidden" id="fl-id">
+    <label class="fld">Reason for failure
+      <select id="fl-reason">
+        <option value="">— select —</option>
+        <option>Poor Quality Lead</option>
+        <option>Out of budget</option>
+        <option>Ghosted</option>
+        <option>Not agreeing for deliverables</option>
+      </select>
+    </label>
+    <div id="fl-budget" style="display:none">
+      <label class="fld">Their initial offer <input id="fl-tinit" placeholder="e.g. 200"></label>
+      <label class="fld">Their final offer <input id="fl-tfinal" placeholder="e.g. 350"></label>
+      <label class="fld">Our final offer <input id="fl-ofinal" placeholder="e.g. 250"></label>
+    </div>
+    <label class="fld">Details <textarea id="fl-details" rows="2" placeholder="anything worth noting about the failure…"></textarea></label>
+    <div class="add-msg" id="fail-msg"></div>
+    <div class="row">
+      <button class="send" id="fl-save" style="flex:1">Mark Failed</button>
+      <button class="note-btn" id="fl-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add video modal -->
+<div id="video-bg" class="modal-bg">
+  <div class="modal">
+    <h3>Add video</h3>
+    <label class="fld">Lead (Instagram handle)
+      <input id="v-handle" placeholder="@handle — must already be a lead" autocomplete="off">
+    </label>
+    <label class="fld">Video URL <input id="v-url" placeholder="https://…"></label>
+    <label class="fld">Date posted <input id="v-date" type="date"></label>
+    <label class="fld">Country <input id="v-country" list="country-list" placeholder="type to search…"></label>
+    <label class="fld">Language <input id="v-language" placeholder="e.g. English"></label>
+    <label class="fld">Video type
+      <select id="v-type"><option value="">—</option></select>
+    </label>
+    <label class="fld">Budget <span class="opt">(total)</span> <input id="v-budget" placeholder="e.g. $500"></label>
+    <label class="fld">Notes <textarea id="v-notes" rows="2"></textarea></label>
+    <div class="add-msg" id="video-msg"></div>
+    <div class="row">
+      <button class="send" id="v-save" style="flex:1">Add video</button>
+      <button class="note-btn" id="v-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+<datalist id="country-list"></datalist>
+
+<!-- Funnel modal -->
+<div id="funnel-bg" class="modal-bg">
+  <div class="modal xwide">
+    <h3>Funnel analytics</h3>
+    <div class="foot-hint">Leads collected → reached out → replied (+ve / −ve) → price quoted → closed, across leads the CRM knows. Reply sentiment auto-derived from CRM status/label. A lead counts in every campaign it belongs to.</div>
+    <div class="row funnel-range">
+      <span class="date-label">📅 Between</span>
+      <input type="date" id="fn-from" title="From (IST)">
+      <span class="date-label">and</span>
+      <input type="date" id="fn-to" title="To (IST)">
+      <button class="chip" id="fn-all">All time</button>
+      <span class="foot-hint" id="fn-note" style="margin-left:auto"></span>
+    </div>
+    <div class="funnel-wrap">
+      <div class="funnel-overall">
+        <div class="fsec-title">Overall</div>
+        <div id="funnel-overall"></div>
+      </div>
+      <div class="funnel-camps">
+        <div class="fsec-title">By category</div>
+        <div id="funnel-categories" class="act-body"></div>
+      </div>
+      <div class="funnel-camps">
+        <div class="fsec-title">By campaign</div>
+        <div id="funnel-campaigns" class="act-body"></div>
+      </div>
+    </div>
+    <div class="row"><button class="note-btn" id="funnel-close" style="flex:1">Close</button></div>
+  </div>
+</div>
+
+<!-- Activity modal -->
+<div id="activity-bg" class="modal-bg">
+  <div class="modal xwide">
+    <h3>Member activity</h3>
+    <div class="foot-hint">Leads found and leads-with-email per teammate, per day (IST). Uses the date range selected on the leads page — change it there to re-scope.</div>
+    <div class="row act-range" id="act-range"></div>
+    <div id="activity-totals" class="act-totals"></div>
+    <div id="activity-body" class="act-body"></div>
+    <div class="row"><button class="note-btn" id="activity-close" style="flex:1">Close</button></div>
+  </div>
+</div>
+
+<!-- Team modal -->
+<div id="team-bg" class="modal-bg">
+  <div class="modal">
+    <h3>Team access</h3>
+    <div id="user-list" style="margin-bottom:14px"></div>
+    <input id="nu-user" placeholder="Username (min 3 chars)">
+    <input id="nu-pass" type="password" placeholder="Password (min 8 chars)">
+    <input id="nu-display" placeholder="Display name">
+    <label class="chk"><input type="checkbox" id="nu-admin"> Admin (can add users &amp; upload master list)</label>
+    <div class="row">
+      <button class="send" id="nu-add" style="flex:1">Add teammate</button>
+      <button class="note-btn" id="team-close">Close</button>
+    </div>
+    <div class="add-msg" id="team-msg"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

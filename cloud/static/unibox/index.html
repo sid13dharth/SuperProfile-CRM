@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuperProfile CRM</title>
+<link rel="stylesheet" href="/unibox/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📬</text></svg>">
+</head>
+<body>
+
+<!-- Login / first-run setup -->
+<div id="login-view">
+  <div class="login-card">
+    <h1 id="login-title">Sign in</h1>
+    <div class="sub" id="login-sub">SuperProfile CRM</div>
+    <div class="login-error" id="login-error"></div>
+    <input id="login-user" placeholder="Username" autocomplete="username">
+    <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password">
+    <input id="login-display" placeholder="Display name (e.g. Siddharth)" style="display:none">
+    <button id="login-btn" data-mode="login">Sign in</button>
+  </div>
+</div>
+
+<!-- Main app -->
+<div id="app">
+  <header>
+    <div class="logo">SuperProfile <span>CRM</span></div>
+    <div class="sync-pill"><span class="sync-dot" id="sync-dot"></span><span id="sync-pill">connecting…</span></div>
+    <button class="hbtn" id="sync-now" title="Pull latest from Instantly now">⟳ Sync now</button>
+    <select id="ws-select" title="Workspace (Instantly account)"></select>
+    <button class="hbtn" id="ws-manage" style="display:none" title="Manage workspaces">⚙</button>
+    <div class="spacer"></div>
+    <button class="hbtn" id="export-btn">⬇ Export CSV</button>
+    <button class="hbtn" id="stats-btn">📊 Stats</button>
+    <button class="hbtn" id="manage-btn">🏷 Labels &amp; statuses</button>
+    <button class="hbtn" id="activity-btn" style="display:none">📈 Activity</button>
+    <button class="hbtn" id="team-btn" style="display:none">👥 Team</button>
+    <span id="who" style="color:var(--muted);font-size:13px"></span>
+    <button class="hbtn" id="logout">Log out</button>
+  </header>
+
+  <div class="body-row">
+    <nav class="sidebar">
+      <button class="nav-item active" data-view="home">🏠 Home</button>
+      <button class="nav-item" data-view="campaigns">📣 Campaigns</button>
+      <button class="nav-item" data-view="analytics">📈 Analytics</button>
+    </nav>
+    <div class="main">
+      <div id="view-home">
+  <div id="filters">
+    <div class="dd" id="campaign-dd">
+      <button class="dd-btn" id="campaign-btn">All campaigns ▾</button>
+      <div class="dd-menu" id="campaign-menu"></div>
+    </div>
+    <select id="poc-filter"><option value="">POC: anyone</option></select>
+    <select id="status-filter"><option value="">Status: any</option></select>
+    <select id="label-filter"><option value="">Label: any</option></select>
+    <input id="search" placeholder="Search name, email, subject…">
+    <label style="color:var(--muted);font-size:12px">Replied from</label>
+    <input type="date" id="date-from">
+    <label style="color:var(--muted);font-size:12px">to</label>
+    <input type="date" id="date-to">
+    <select id="sort-order" title="Order leads by when the lead last replied">
+      <option value="newest">Sort: Newest reply first</option>
+      <option value="oldest">Sort: Oldest reply first</option>
+    </select>
+    <button class="hbtn" id="clear-filters">Clear all filters</button>
+  </div>
+
+  <div id="tabs"></div>
+  <div id="list"><div class="empty">Loading…</div></div>
+      </div><!-- /view-home -->
+
+      <div id="view-campaigns" style="display:none">
+        <div class="view-head"><h2>Campaigns</h2>
+          <span class="view-sub">Pick a campaign and upload a CSV of leads — they're added straight into that Instantly campaign (sequences & settings stay in Instantly).</span></div>
+        <div id="campaigns-list" class="cards"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div id="view-analytics" style="display:none">
+        <div class="view-head"><h2>Analytics</h2>
+          <button class="hbtn" id="analytics-refresh">⟳ Refresh</button>
+          <input id="analytics-search" placeholder="🔎 Search campaigns…">
+          <span class="view-sub">Live from Instantly · newest first</span></div>
+        <div id="analytics-body"><div class="empty">Loading…</div></div>
+      </div>
+    </div><!-- /main -->
+  </div><!-- /body-row -->
+  <input type="file" id="csv-input" accept=".csv,text/csv" style="display:none">
+</div>
+
+<!-- Lead drawer -->
+<div id="overlay"></div>
+<div id="drawer">
+  <div class="drawer-head">
+    <div class="top">
+      <div>
+        <h2 id="d-name"></h2>
+        <div class="mail" id="d-mail"></div>
+        <div class="mail" id="d-links"></div>
+      </div>
+      <button class="close" id="d-close">×</button>
+    </div>
+    <div class="control-row">
+      <div class="ctrl"><label for="d-status">Status</label><select id="d-status"></select></div>
+      <div class="ctrl"><label for="d-label">Label</label><select id="d-label"></select></div>
+      <div class="ctrl"><label for="d-poc">POC</label><select id="d-poc"></select></div>
+    </div>
+    <div class="deal-panel" id="d-deal"></div>
+    <div class="drawer-actions" id="d-actions"></div>
+  </div>
+  <div class="drawer-body" id="thread"></div>
+  <div class="drawer-foot">
+    <textarea id="reply-text" placeholder="Type a reply (sends via Instantly) — or save it as an internal note…"></textarea>
+    <div class="foot-row">
+      <button class="send" id="send-btn">Send reply</button>
+      <button class="note-btn" id="note-btn">📝 Save as note</button>
+      <div class="dd" id="tpl-dd">
+        <button class="note-btn" id="tpl-btn">📋 Templates ▾</button>
+        <div class="dd-menu up" id="tpl-menu"></div>
+      </div>
+      <div class="dd" id="links-dd">
+        <button class="note-btn" id="links-btn">🔗 Links ▾</button>
+        <div class="dd-menu up" id="links-menu"></div>
+      </div>
+      <span class="foot-hint">Replies go out from the same inbox the campaign uses. · Select text + Ctrl+K to add a link.</span>
+    </div>
+  </div>
+</div>
+
+<!-- Team modal -->
+<div id="modal-bg">
+  <div class="modal">
+    <h3>Team access</h3>
+    <div id="user-list" style="margin-bottom:14px"></div>
+    <input id="nu-user" placeholder="Username (min 3 chars)">
+    <input id="nu-pass" type="password" placeholder="Password (min 8 chars)">
+    <input id="nu-display" placeholder="Display name">
+    <label><input type="checkbox" id="nu-admin"> Admin (can add users)</label>
+    <div class="row">
+      <button class="send" id="nu-add" style="flex:1">Add teammate</button>
+      <button class="note-btn" id="modal-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Status detail modal (Closed / Failed / Rates quoted) -->
+<div id="status-bg">
+  <div class="modal">
+    <h3 id="sd-title">Details</h3>
+    <div id="sd-fields"></div>
+    <div class="row">
+      <button class="send" id="sd-save" style="flex:1">Save</button>
+      <button class="note-btn" id="sd-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Manual quoted-rate modal -->
+<div id="rate-bg">
+  <div class="modal">
+    <h3>Quoted rate</h3>
+    <div class="rate-grid">
+      <label class="fld">Amount<input id="r-amount" type="number" min="0" step="any" placeholder="e.g. 150"></label>
+      <label class="fld">Currency<select id="r-cur">
+        <option value="$">USD ($)</option>
+        <option value="₹">INR (₹)</option>
+        <option value="€">EUR (€)</option>
+        <option value="£">GBP (£)</option>
+        <option value="C$">CAD (C$)</option>
+        <option value="A$">AUD (A$)</option>
+      </select></label>
+    </div>
+    <div class="rate-lines-head">Deliverables</div>
+    <div id="r-lines"></div>
+    <button type="button" id="r-add-line" class="add-line-btn">+ Add deliverable</button>
+    <label class="fld">Other deliverables <span class="opt">(optional)</span>
+      <input id="r-other" type="text" placeholder="course/community integration, newsletter…"></label>
+    <div class="rate-prev" id="r-prev"></div>
+    <div class="row">
+      <button class="send" id="r-save" style="flex:1">Save</button>
+      <button class="note-btn" id="r-auto">Use auto</button>
+      <button class="note-btn" id="r-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Workspaces modal (admin only) -->
+<div id="ws-bg">
+  <div class="modal">
+    <h3>Workspaces (Instantly accounts)</h3>
+    <div class="foot-hint" style="margin-bottom:10px">Each workspace is a separate Instantly account. Add one by pasting its API key.</div>
+    <div id="ws-list"></div>
+    <div class="manage-title" style="margin-top:14px">Add a workspace</div>
+    <label class="fld">Name<input id="ws-name" placeholder="e.g. SuperProfile India"></label>
+    <label class="fld">Instantly API key<input id="ws-key" type="password" placeholder="Paste the account's API key"></label>
+    <div class="rate-prev" id="ws-msg"></div>
+    <div class="row">
+      <button class="send" id="ws-save" style="flex:1">Add workspace</button>
+      <button class="note-btn" id="ws-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Member activity modal (admin only) -->
+<div id="activity-bg">
+  <div class="modal">
+    <h3>Member activity</h3>
+    <div class="foot-hint" style="margin-bottom:10px">How many replies and actions each member has done.</div>
+    <div class="row" style="margin-bottom:12px">
+      <input type="date" id="act-from" style="flex:1">
+      <span style="color:var(--muted);align-self:center;font-size:12px">to</span>
+      <input type="date" id="act-to" style="flex:1">
+      <button class="note-btn" id="act-apply">Apply</button>
+    </div>
+    <div id="activity-body"></div>
+    <div class="row" style="margin-top:12px"><button class="note-btn" id="activity-close" style="flex:1">Close</button></div>
+  </div>
+</div>
+
+<!-- Manage labels & statuses modal -->
+<div id="manage-bg">
+  <div class="modal">
+    <h3>Labels &amp; statuses</h3>
+    <div class="manage-sec">
+      <div class="manage-title">Labels</div>
+      <div id="label-list"></div>
+      <div class="row">
+        <input id="new-label" placeholder="New label name" style="flex:1">
+        <button class="note-btn" id="add-label">Add</button>
+      </div>
+    </div>
+    <div class="manage-sec">
+      <div class="manage-title">Statuses</div>
+      <div id="status-list"></div>
+      <div class="row">
+        <input id="new-status" placeholder="New status name" style="flex:1">
+        <button class="note-btn" id="add-status">Add</button>
+      </div>
+      <div class="foot-hint" style="margin-top:6px">Built-in statuses can't be deleted (they drive the pop-up questions).</div>
+    </div>
+    <div class="row"><button class="note-btn" id="manage-close" style="flex:1">Close</button></div>
+  </div>
+</div>
+
+<!-- Stats modal -->
+<div id="stats-bg">
+  <div class="modal">
+    <h3>Pipeline stats</h3>
+    <div class="foot-hint" style="margin-bottom:10px">Counts reflect the current filters.</div>
+    <div id="stats-body"></div>
+    <div class="row"><button class="note-btn" id="stats-close" style="flex:1">Close</button></div>
+  </div>
+</div>
+
+<!-- Links manage modal -->
+<div id="links-manage-bg">
+  <div class="modal">
+    <h3>Links</h3>
+    <div class="foot-hint" style="margin-bottom:8px">Shared links you can copy while replying. Click a link in the dropdown to copy it.</div>
+    <div id="links-list"></div>
+    <button class="note-btn" id="link-new" style="margin-top:6px">＋ New link</button>
+    <div id="link-editor" style="display:none;margin-top:10px">
+      <div class="manage-title" id="link-editor-title">New link</div>
+      <input id="link-name" placeholder="Name (e.g. Booking link)" style="width:100%;margin-bottom:8px;padding:9px 11px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
+      <input id="link-url" placeholder="https://…" style="width:100%;margin-bottom:8px;padding:9px 11px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
+      <div class="row">
+        <button class="send" id="link-save" style="flex:1">Save link</button>
+        <button class="note-btn" id="link-cancel">Cancel</button>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px"><button class="note-btn" id="links-manage-close" style="flex:1">Close</button></div>
+  </div>
+</div>
+
+<!-- Templates manage modal -->
+<div id="tpl-manage-bg">
+  <div class="modal wide">
+    <h3>Reply templates</h3>
+    <div class="manage-sec">
+      <div class="manage-title">Your booking link (personal)</div>
+      <div class="foot-hint" style="margin-bottom:6px">Used to auto-fill {{MEETING LINK}} when you paste a template. Only yours.</div>
+      <div class="row">
+        <input id="booking-link" placeholder="https://superprofile.bio/bookings/yourname" style="flex:1">
+        <button class="note-btn" id="booking-save">Save</button>
+      </div>
+    </div>
+    <div class="manage-sec">
+      <div class="manage-title">Templates <span class="foot-hint">(shared with the team)</span></div>
+      <div id="tpl-list"></div>
+      <button class="note-btn" id="tpl-new" style="margin-top:6px">＋ New template</button>
+    </div>
+    <div id="tpl-editor" style="display:none">
+      <div class="manage-title" id="tpl-editor-title">New template</div>
+      <input id="tpl-name" placeholder="Template name (e.g. VIDEO TEMPLATE)" style="width:100%;margin-bottom:8px;padding:9px 11px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
+      <textarea id="tpl-body" style="width:100%;min-height:220px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 11px;resize:vertical;font:inherit"></textarea>
+      <div class="foot-hint" style="margin:6px 0">Placeholders auto-filled on paste: {{LEAD NAME}}, {{firstName}}, {{YOUR NAME}}, {{MEETING LINK}}. Leave {{N}}, {{xyz}} to fill by hand.</div>
+      <div class="row">
+        <button class="send" id="tpl-save" style="flex:1">Save template</button>
+        <button class="note-btn" id="tpl-cancel">Cancel</button>
+      </div>
+    </div>
+    <div class="row"><button class="note-btn" id="tpl-manage-close" style="flex:1">Close</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/unibox/app.js"></script>
+</body>
+</html>

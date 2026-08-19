@@ -1,0 +1,17 @@
+# Secrets — never commit
+cf_token.txt
+**/cf_token.txt
+.dev.vars
+**/.dev.vars
+*.pem
+*.key
+
+# Dependencies / build
+node_modules/
+**/node_modules/
+.wrangler/
+**/.wrangler/
+
+# OS / editor
+.DS_Store
+Thumbs.db
