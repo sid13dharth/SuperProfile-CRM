@@ -1179,8 +1179,10 @@ async function handleApi(request, env, url) {
 
   if (path === '/api/videos' && method === 'POST') {
     const user = await requireUser(env, request);
-    // Resolve the lead by entry_id or handle.
+    // Resolve the lead by entry_id or handle. Both optional: a video may be a
+    // standalone record carrying only a free-text lead_name (e.g. CSV import).
     let entryId = parseInt(body.entry_id, 10) || 0, handle = '';
+    const leadName = (body.lead_name || '').trim();
     if (entryId) {
       const e = await env.DB.prepare('SELECT handle_norm FROM entries WHERE id=?').bind(entryId).first();
       if (!e) throw new ApiError(404, 'Lead not found');
@@ -1190,18 +1192,46 @@ async function handleApi(request, env, url) {
       const e = await env.DB.prepare('SELECT id, handle_norm FROM entries WHERE handle_norm=?').bind(h).first();
       if (!e) throw new ApiError(404, `No lead with handle @${h} — add the lead first`);
       entryId = e.id; handle = e.handle_norm;
-    } else {
-      throw new ApiError(400, 'A lead (handle) is required for a video');
+    } else if (!leadName) {
+      throw new ApiError(400, 'A lead (handle) or lead name is required for a video');
     }
     const r = await env.DB.prepare(
-      `INSERT INTO videos (entry_id, handle, url, date_posted, country, language, video_type, budget, notes, created_at, created_by)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      `INSERT INTO videos (entry_id, handle, url, date_posted, country, language, video_type, budget, notes, lead_name, referral, saas, created_at, created_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(entryId, handle, (body.url || '').trim(), (body.date_posted || '').trim(), (body.country || '').trim(),
             (body.language || '').trim(), (body.video_type || '').trim(), (body.budget || '').trim(),
-            (body.notes || '').trim(), nowIso(), user.username).run();
+            (body.notes || '').trim(), leadName, (body.referral || '').trim(), (body.saas || '').trim(),
+            nowIso(), user.username).run();
     await bumpVersion(env);
     const row = await env.DB.prepare('SELECT * FROM videos WHERE id=?').bind(r.meta.last_row_id).first();
     return json({ ok: true, video: row });
+  }
+
+  // Bulk CSV import: standalone video rows (lead name stored as free text).
+  if (path === '/api/videos/import' && method === 'POST') {
+    const user = await requireUser(env, request);
+    const rows = Array.isArray(body.rows) ? body.rows : [];
+    if (!rows.length) throw new ApiError(400, 'No rows to import');
+    const added = nowIso();
+    const clean = s => String(s == null ? '' : s).trim();
+    const stmts = [];
+    let skipped = 0;
+    for (const r of rows) {
+      const rec = {
+        date_posted: clean(r.date_posted), lead_name: clean(r.lead_name), url: clean(r.url),
+        budget: clean(r.budget), referral: clean(r.referral), saas: clean(r.saas),
+      };
+      // Skip fully-empty rows.
+      if (!Object.values(rec).some(v => v)) { skipped++; continue; }
+      stmts.push(env.DB.prepare(
+        `INSERT INTO videos (entry_id, handle, url, date_posted, country, language, video_type, budget, notes, lead_name, referral, saas, created_at, created_by)
+         VALUES (0,'',?,?,'','','',?,'',?,?,?,?,?)`)
+        .bind(rec.url, rec.date_posted, rec.budget, rec.lead_name, rec.referral, rec.saas, added, user.username));
+    }
+    if (!stmts.length) throw new ApiError(400, 'No usable rows in the file');
+    for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
+    await bumpVersion(env);
+    return json({ ok: true, imported: stmts.length, skipped });
   }
 
   if (path === '/api/videos' && method === 'PATCH') {
@@ -1209,7 +1239,7 @@ async function handleApi(request, env, url) {
     const id = parseInt(body.id, 10);
     if (!id) throw new ApiError(400, 'id required');
     const sets = [], args = [];
-    for (const f of ['url', 'date_posted', 'country', 'language', 'video_type', 'budget', 'notes']) {
+    for (const f of ['url', 'date_posted', 'country', 'language', 'video_type', 'budget', 'notes', 'lead_name', 'referral', 'saas']) {
       if (f in body) { sets.push(`${f}=?`); args.push(String(body[f] || '').trim()); }
     }
     if (!sets.length) throw new ApiError(400, 'Nothing to update');

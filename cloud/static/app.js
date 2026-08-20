@@ -939,12 +939,15 @@ async function saveFail() {
 /* ── videos view ───────────────────────────────────────────── */
 const VIDEO_COLS = [
   { f: 'handle', h: 'Lead', leadlink: true, cls: 'uname' },
+  { f: 'lead_name', h: 'Lead name', e: 'text' },
   { f: 'url', h: 'Video URL', e: 'text', cls: 'lnk' },
   { f: 'date_posted', h: 'Date posted', e: 'date', cls: 'dt' },
   { f: 'country', h: 'Country', e: 'country' },
   { f: 'language', h: 'Language', e: 'text' },
   { f: 'video_type', h: 'Video type', e: 'video_type' },
   { f: 'budget', h: 'Budget', e: 'text' },
+  { f: 'referral', h: 'Referral', e: 'text' },
+  { f: 'saas', h: 'SAAS', e: 'text' },
   { f: 'notes', h: 'Notes', e: 'notes', cls: 'notes' },
 ];
 async function loadVideos() {
@@ -971,7 +974,7 @@ function renderVideos() {
   const sc = list.scrollTop, sl = list.scrollLeft;
   const q = ($('video-search').value || '').trim().toLowerCase();
   let vids = state.videos;
-  if (q) vids = vids.filter(v => `${v.handle} ${v.country} ${v.video_type} ${v.language} ${v.url}`.toLowerCase().includes(q));
+  if (q) vids = vids.filter(v => `${v.handle} ${v.lead_name || ''} ${v.country} ${v.video_type} ${v.language} ${v.url} ${v.referral || ''} ${v.saas || ''}`.toLowerCase().includes(q));
   $('entry-count').textContent = vids.length ? `(${vids.length})` : '';
   if (!vids.length) { list.innerHTML = '<div class="empty">No videos yet. Click ＋ Add video.</div>'; return; }
   const head = '<thead><tr>' + VIDEO_COLS.map(c => `<th class="${c.cls || ''}">${esc(c.h)}</th>`).join('') + '<th class="act"></th></tr></thead>';
@@ -997,22 +1000,95 @@ async function deleteVideo(v) {
 }
 function openAddVideo() {
   $('video-bg').classList.add('open'); $('video-msg').textContent = '';
-  ['v-handle', 'v-url', 'v-date', 'v-country', 'v-language', 'v-budget', 'v-notes'].forEach(id => $(id).value = '');
+  ['v-handle', 'v-lead-name', 'v-url', 'v-date', 'v-country', 'v-language', 'v-budget', 'v-referral', 'v-saas', 'v-notes'].forEach(id => $(id).value = '');
   $('v-type').innerHTML = '<option value="">—</option>' + VIDEO_TYPES.map(t => `<option>${esc(t)}</option>`).join('');
 }
 async function saveVideo() {
   const msg = $('video-msg'); msg.className = 'add-msg'; msg.textContent = '';
   const body = {
-    handle: $('v-handle').value.trim(), url: $('v-url').value.trim(), date_posted: $('v-date').value,
+    handle: $('v-handle').value.trim(), lead_name: $('v-lead-name').value.trim(),
+    url: $('v-url').value.trim(), date_posted: $('v-date').value,
     country: $('v-country').value.trim(), language: $('v-language').value.trim(), video_type: $('v-type').value,
-    budget: $('v-budget').value.trim(), notes: $('v-notes').value.trim(),
+    budget: $('v-budget').value.trim(), referral: $('v-referral').value.trim(), saas: $('v-saas').value.trim(),
+    notes: $('v-notes').value.trim(),
   };
-  if (!body.handle) { msg.className = 'add-msg err'; msg.textContent = 'Enter the lead handle.'; return; }
+  if (!body.handle && !body.lead_name) { msg.className = 'add-msg err'; msg.textContent = 'Enter the lead handle or a lead name.'; return; }
   const btn = $('v-save'); btn.disabled = true;
   try { await api('/api/videos', { method: 'POST', body }); $('video-bg').classList.remove('open'); toast('Video added'); await loadVideos(); }
   catch (e) { msg.className = 'add-msg err'; msg.textContent = e.message; }
   finally { btn.disabled = false; }
 }
+
+/* ── videos CSV import ─────────────────────────────────────── */
+// Header aliases → our fields. Any subset of columns is accepted.
+const VIMPORT_COLS = {
+  date_posted: ['date posted', 'date_posted', 'date', 'posted', 'posted on', 'post date'],
+  lead_name:   ['lead name', 'lead_name', 'lead', 'name', 'creator', 'client'],
+  url:         ['url', 'video url', 'video_url', 'link', 'video link', 'video'],
+  budget:      ['budget', 'deal', 'amount', 'price', 'value'],
+  referral:    ['referral', 'referral source', 'referred by', 'source', 'ref'],
+  saas:        ['saas', 'saas product', 'software', 'tool', 'product'],
+};
+let parsedVideos = null;
+
+function extractVideos(text) {
+  const rows = parseDelimited(text);
+  if (!rows.length) return { rows: [] };
+  const header = rows[0].map(h => h.trim().toLowerCase());
+  // A header is expected (six named columns). Map each of our fields to a column index.
+  const idx = {};
+  for (const [field, aliases] of Object.entries(VIMPORT_COLS)) {
+    idx[field] = header.findIndex(h => aliases.includes(h));
+  }
+  const matched = Object.entries(idx).filter(([, i]) => i >= 0).map(([f]) => f);
+  const body = rows.slice(1);
+  const out = [];
+  for (const r of body) {
+    const rec = {};
+    for (const [field, i] of Object.entries(idx)) rec[field] = i >= 0 ? (r[i] || '').trim() : '';
+    if (Object.values(rec).some(v => v)) out.push(rec);
+  }
+  return { rows: out, matched };
+}
+
+function openVideoImport() {
+  $('vimport-bg').classList.add('open');
+  parsedVideos = null; $('vimport-run').disabled = true;
+  $('vimport-file').value = ''; $('vimport-preview').innerHTML = ''; $('vimport-msg').textContent = '';
+}
+function handleVideoFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const res = extractVideos(String(reader.result || ''));
+    parsedVideos = res.rows;
+    if (!res.rows.length) {
+      $('vimport-preview').innerHTML = '<span style="color:var(--red)">No rows found. Expected a header row with columns like: date posted, lead name, url, budget, referral, SAAS.</span>';
+      $('vimport-run').disabled = true; return;
+    }
+    const first = res.rows[0];
+    $('vimport-preview').innerHTML =
+      `Parsed <b>${res.rows.length}</b> videos from <b>${esc(file.name)}</b>` +
+      (res.matched.length ? ` · columns: <b>${res.matched.map(esc).join(', ')}</b>` : '') +
+      `<br><span class="foot-hint">e.g. ${esc([first.lead_name, first.url, first.budget].filter(Boolean).join(' · ') || '(row 1)')}…</span>`;
+    $('vimport-run').disabled = false;
+  };
+  reader.readAsText(file);
+}
+async function runVideoImport() {
+  if (!parsedVideos || !parsedVideos.length) return;
+  const btn = $('vimport-run'); btn.disabled = true; const old = btn.textContent; btn.textContent = 'Importing…';
+  const msg = $('vimport-msg'); msg.className = 'add-msg'; msg.textContent = '';
+  try {
+    const r = await api('/api/videos/import', { method: 'POST', body: { rows: parsedVideos } });
+    msg.className = 'add-msg ok';
+    msg.textContent = `✓ Imported ${r.imported} videos${r.skipped ? ` (${r.skipped} empty rows skipped)` : ''}.`;
+    toast('Videos imported');
+    $('vimport-bg').classList.remove('open');
+    await loadVideos();
+  } catch (e) { msg.className = 'add-msg err'; msg.textContent = e.message; btn.disabled = false; }
+  finally { btn.textContent = old; }
+}
+
 function injectCountries() {
   const dl = $('country-list'); if (!dl || dl.children.length) return;
   dl.innerHTML = COUNTRIES.map(c => `<option value="${esc(c)}"></option>`).join('');
@@ -1468,6 +1544,11 @@ function wire() {
   $('video-search').addEventListener('input', debounce(() => { if (state.tab === 'videos') renderVideos(); }, 200));
   $('v-save').onclick = saveVideo;
   $('v-cancel').onclick = () => $('video-bg').classList.remove('open');
+  // Videos CSV import
+  $('import-video-btn').onclick = openVideoImport;
+  $('vimport-file').onchange = () => { if ($('vimport-file').files[0]) handleVideoFile($('vimport-file').files[0]); };
+  $('vimport-run').onclick = runVideoImport;
+  $('vimport-close').onclick = () => $('vimport-bg').classList.remove('open');
 
   // Edit lead
   $('edit-save').onclick = saveEdit;

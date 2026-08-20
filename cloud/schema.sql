@@ -98,6 +98,9 @@ CREATE TABLE IF NOT EXISTS videos (
     video_type  TEXT NOT NULL DEFAULT '',
     budget      TEXT NOT NULL DEFAULT '',
     notes       TEXT NOT NULL DEFAULT '',
+    lead_name   TEXT NOT NULL DEFAULT '',
+    referral    TEXT NOT NULL DEFAULT '',
+    saas        TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     created_by  TEXT NOT NULL DEFAULT ''
 );

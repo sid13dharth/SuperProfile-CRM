@@ -67,6 +67,7 @@
       </div>
       <div class="list-controls" id="video-controls" style="display:none">
         <input id="video-search" placeholder="Search videos (lead, country, type…)">
+        <button class="hbtn" id="import-video-btn" title="Import a CSV of videos">⬆ Import CSV</button>
         <button class="hbtn" id="add-video-btn">＋ Add video</button>
       </div>
     </div>
@@ -334,8 +335,9 @@
   <div class="modal">
     <h3>Add video</h3>
     <label class="fld">Lead (Instagram handle)
-      <input id="v-handle" placeholder="@handle — must already be a lead" autocomplete="off">
+      <input id="v-handle" placeholder="@handle — an existing lead (optional)" autocomplete="off">
     </label>
+    <label class="fld">Lead name <span class="opt">(free text)</span> <input id="v-lead-name" placeholder="e.g. Jane Doe"></label>
     <label class="fld">Video URL <input id="v-url" placeholder="https://…"></label>
     <label class="fld">Date posted <input id="v-date" type="date"></label>
     <label class="fld">Country <input id="v-country" list="country-list" placeholder="type to search…"></label>
@@ -344,12 +346,33 @@
       <select id="v-type"><option value="">—</option></select>
     </label>
     <label class="fld">Budget <span class="opt">(total)</span> <input id="v-budget" placeholder="e.g. $500"></label>
+    <label class="fld">Referral <input id="v-referral" placeholder="e.g. referral source"></label>
+    <label class="fld">SAAS <input id="v-saas" placeholder="e.g. product / tool"></label>
     <label class="fld">Notes <textarea id="v-notes" rows="2"></textarea></label>
     <div class="add-msg" id="video-msg"></div>
     <div class="row">
       <button class="send" id="v-save" style="flex:1">Add video</button>
       <button class="note-btn" id="v-cancel">Cancel</button>
     </div>
+  </div>
+</div>
+
+<!-- Videos CSV import modal -->
+<div id="vimport-bg" class="modal-bg">
+  <div class="modal wide">
+    <h3>Import videos from CSV</h3>
+    <div class="foot-hint">Expected columns (header row, any order — extras ignored):
+      <code>date posted</code>, <code>lead name</code>, <code>url</code>, <code>budget</code>,
+      <code>referral</code>, <code>SAAS</code>. Excel: export the sheet as CSV first.</div>
+    <label class="fld">CSV / TSV file
+      <input type="file" id="vimport-file" accept=".csv,.tsv,.txt">
+    </label>
+    <div id="vimport-preview" class="master-preview"></div>
+    <div class="row">
+      <button class="send" id="vimport-run" style="flex:1" disabled>Import</button>
+      <button class="note-btn" id="vimport-close">Close</button>
+    </div>
+    <div class="add-msg" id="vimport-msg"></div>
   </div>
 </div>
 <datalist id="country-list"></datalist>
