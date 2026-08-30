@@ -1498,6 +1498,7 @@ async function handleApi(request, env, url) {
     if (sent && sent.id) {
       if (!sent.campaign_id) sent.campaign_id = campaignId;
       if (!sent.lead) sent.lead = leadEmail;
+      sent.ue_type = 3; // a reply sent from the Unibox is a MANUAL reply — mark it so bucketing counts it as answered
       await emailUpsertStmt(env, sent, wsId).run();
     }
     await recomputeConversations(env, [`${campaignId}|${leadEmail}`]);

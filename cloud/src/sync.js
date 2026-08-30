@@ -152,8 +152,14 @@ async function recomputeConversations(env, pairs) {
       const latest = list[list.length - 1];
       const latestLeadMsg = leadMsgs[leadMsgs.length - 1];
       const firstReplyAt = leadMsgs[0].timestamp_email;
-      const ourAfter = sent.filter(r => r.timestamp_email > firstReplyAt);
-      const lastOurMsgAt = ourAfter.length ? ourAfter[ourAfter.length - 1].timestamp_email : '';
+      // Whose turn is it? Decided ONLY by lead replies (ue_type 2) vs our MANUAL
+      // replies (ue_type 3). Automated campaign sends (ue_type 1) must NOT count
+      // as answering a lead — otherwise a sequence step firing after a reply
+      // wrongly bumps the conversation out of "Needs Reply" into Waiting/Follow-Up.
+      const turnMsgs = list.filter(r => r.ue_type === 2 || r.ue_type === 3);
+      const turnUeType = turnMsgs[turnMsgs.length - 1].ue_type; // 2 = their turn, 3 = we replied
+      const manualAfter = list.filter(r => r.ue_type === 3 && r.timestamp_email > firstReplyAt);
+      const lastOurMsgAt = manualAfter.length ? manualAfter[manualAfter.length - 1].timestamp_email : '';
       const subject = latest.subject || list[0].subject;
       const eaccount = latest.eaccount || (sent.length ? sent[sent.length - 1].eaccount : '');
       touchedKeys.push(key);
@@ -171,7 +177,7 @@ async function recomputeConversations(env, pairs) {
            lead_reply_count=excluded.lead_reply_count, ws=excluded.ws, updated_at=excluded.updated_at`)
         .bind(key, campaignId, leadEmail, getFirstName(subject, leadEmail), subject,
               (latestLeadMsg.preview || '').slice(0, 300), eaccount, latestLeadMsg.timestamp_email,
-              lastOurMsgAt, latest.timestamp_email, latest.ue_type, firstReplyAt,
+              lastOurMsgAt, latest.timestamp_email, turnUeType, firstReplyAt,
               list.length, leadMsgs.length, (list[0].ws || 1), nowIso()));
     }
     if (stmts.length) await env.DB.batch(stmts);
