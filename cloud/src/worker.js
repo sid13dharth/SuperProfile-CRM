@@ -18,7 +18,7 @@
 
 import {
   runFullSync, runManualSync, ensureDefaultWorkspace, listWorkspaces, wsKey,
-  recomputeConversations, linkConversations, emailUpsertStmt, instantlyPost,
+  recomputeConversations, linkConversations, emailUpsertStmt, instantlyPost, instantlyGet,
   runRateExtraction, runBodyBackfill, USD_PER, AUTO_POC_NAMES,
 } from './sync.js';
 
@@ -1608,6 +1608,28 @@ async function handleApi(request, env, url) {
     const ws = Number(url.searchParams.get('ws') || 1) || 1;
     const { results } = await env.DB.prepare('SELECT id, name, status, created FROM campaigns WHERE ws=? ORDER BY created DESC, name').bind(ws).all();
     return json({ campaigns: results });
+  }
+
+  // Live per-campaign analytics, straight from Instantly. Enriched with the
+  // locally-synced campaign name + created date (for name fallback + newest-first
+  // sort in the UI).
+  if (path === '/api/analytics' && method === 'GET') {
+    await requireUser(env, request);
+    const ws = Number(url.searchParams.get('ws') || 1) || 1;
+    const apiKey = await wsKey(env, ws);
+    if (!apiKey) throw new ApiError(400, 'Instantly is not configured (no API key for this workspace)');
+    let data;
+    try { data = await instantlyGet(env, '/campaigns/analytics', {}, apiKey); }
+    catch (e) { throw new ApiError(502, `Instantly analytics failed: ${e.message}`); }
+    const list = Array.isArray(data) ? data : (data.items || data.data || []);
+    const { results: locals } = await env.DB.prepare('SELECT id, name, created FROM campaigns WHERE ws=?').bind(ws).all();
+    const meta = new Map((locals || []).map(c => [c.id, c]));
+    const campaigns = list.map(a => {
+      const id = a.campaign_id || a.id || '';
+      const m = meta.get(id) || {};
+      return { ...a, campaign_id: id, campaign_name: a.campaign_name || m.name || '', created: a.created || m.created || '' };
+    });
+    return json({ campaigns });
   }
 
   // Manual Instantly sync (one workspace).
