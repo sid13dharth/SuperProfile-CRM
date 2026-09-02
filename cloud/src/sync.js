@@ -296,13 +296,6 @@ function extractOwner(payload) {
   for (const k of ['Lead Owner', 'leadOwner', 'lead_owner', 'owner']) if (typeof payload[k] === 'string') return payload[k].trim();
   return '';
 }
-async function pocCounts(env) {
-  const counts = Object.fromEntries(AUTO_POC_NAMES.map(n => [n, 0]));
-  const q = AUTO_POC_NAMES.map(() => '?').join(',');
-  const { results } = await env.DB.prepare(`SELECT poc, COUNT(*) c FROM conversations WHERE poc IN (${q}) GROUP BY poc`).bind(...AUTO_POC_NAMES).all();
-  for (const r of results) counts[r.poc] = r.c;
-  return counts;
-}
 async function runEnrich(env, ws, apiKey, maxEmails = 40) {
   const { results } = await env.DB.prepare('SELECT DISTINCT email FROM conversations WHERE ws=? AND enriched=0 LIMIT ?').bind(ws, maxEmails).all();
   const emails = results.map(r => r.email);
@@ -331,7 +324,6 @@ async function runEnrich(env, ws, apiKey, maxEmails = 40) {
     byEmailBest[em] = fb;
   }
 
-  const counts = await pocCounts(env);
   const { results: leadRows } = await env.DB.prepare(
     `SELECT key, email, campaign_id, poc, label FROM conversations WHERE ws=? AND email IN (${emails.map(() => '?').join(',')})`).bind(ws, ...emails).all();
   const byEmail = new Map();
@@ -353,13 +345,14 @@ async function runEnrich(env, ws, apiKey, maxEmails = 40) {
     const rows = byEmail.get(em) || [];
     const unassigned = rows.filter(r => !r.poc).map(r => r.key);
     if (!unassigned.length) continue;
-    let poc = AUTO_POC_NAMES.find(n => n.toLowerCase() === (owner || '').trim().toLowerCase()) || '';
-    if (!poc) poc = (rows.find(r => r.poc) || {}).poc || '';
-    if (!poc) { const low = Math.min(...Object.values(counts)); const lowest = AUTO_POC_NAMES.filter(n => counts[n] === low); poc = lowest[Math.floor(Math.random() * lowest.length)]; }
-    counts[poc] = (counts[poc] || 0) + unassigned.length;
+    // POC comes straight from Instantly's "Lead Owner" — no round-robin / no
+    // auto-assigning to the internal team. If Instantly has no owner for this
+    // lead, leave it unassigned for a human to set.
+    const poc = (owner || '').trim();
+    if (!poc) continue;
     for (const key of unassigned) {
       stmts.push(env.DB.prepare('UPDATE conversations SET poc=?, updated_at=? WHERE key=?').bind(poc, now, key));
-      stmts.push(env.DB.prepare('INSERT INTO activity (lead_key, author, kind, detail, created_at) VALUES (?,?,?,?,?)').bind(key, 'Auto', 'poc_change', `auto-assigned to ${poc}`, now));
+      stmts.push(env.DB.prepare('INSERT INTO activity (lead_key, author, kind, detail, created_at) VALUES (?,?,?,?,?)').bind(key, 'Auto', 'poc_change', `set from Instantly Lead Owner: ${poc}`, now));
     }
   }
   await env.DB.batch(stmts);
