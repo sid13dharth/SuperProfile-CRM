@@ -1515,8 +1515,7 @@ async function handleApi(request, env, url) {
     if (body.clear) {
       await env.DB.prepare(`UPDATE conversations SET quoted_currency='', quoted_amount=NULL, quoted_usd=NULL, quoted_all='',
           quoted_qty=NULL, quoted_unit='', quoted_per_unit_usd=NULL, quoted_source='', quoted_other='' WHERE key=?`).bind(key).run();
-      try { await runRateExtraction(env); } catch (e) { console.log('rate extract:', e.message); }
-      await touchConv(env, key, user, 'rate_manual', 'cleared → auto');
+      await touchConv(env, key, user, 'rate_manual', 'cleared');
       await relinkConv(env, key);
       return json({ ok: true });
     }

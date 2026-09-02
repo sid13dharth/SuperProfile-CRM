@@ -207,6 +207,7 @@ async function runSync(env, ws, apiKey, maxPages = 6) {
   if (watermark) minTs = new Date(Date.parse(watermark) - SYNC_OVERLAP_MINUTES * 60000).toISOString().replace(/\.\d{3}Z$/, '.000Z');
 
   const touched = new Set();
+  const bookingKeys = new Set(); // conversations where a just-synced email carries our booking link
   let maxCreated = watermark, count = 0, startingAfter = null;
   for (let page = 0; page < maxPages; page++) {
     const data = await instantlyGet(env, '/emails', { limit: 100, sort_order: 'asc', min_timestamp_created: minTs, starting_after: startingAfter }, apiKey);
@@ -216,7 +217,9 @@ async function runSync(env, ws, apiKey, maxPages = 6) {
       for (const e of items) {
         if (!e.id) continue;
         count++;
-        touched.add(`${e.campaign_id || ''}|${(e.lead || '').toLowerCase()}`);
+        const k = `${e.campaign_id || ''}|${(e.lead || '').toLowerCase()}`;
+        touched.add(k);
+        if (hasBookingLink(e)) bookingKeys.add(k); // body present in the list payload
         const tc = e.timestamp_created || '';
         if (tc > maxCreated) maxCreated = tc;
       }
@@ -226,6 +229,7 @@ async function runSync(env, ws, apiKey, maxPages = 6) {
   }
 
   const keys = await recomputeConversations(env, [...touched].filter(p => p.split('|')[1]));
+  if (bookingKeys.size) await markCallPitched(env, [...bookingKeys]);
   const stmts = [metaSetStmt(env, `last_sync:${ws}`, nowIso()), metaSetStmt(env, 'last_sync', nowIso())];
   if (maxCreated) stmts.push(metaSetStmt(env, `watermark:${ws}`, maxCreated));
   await env.DB.batch(stmts);
@@ -259,10 +263,10 @@ async function runBackfill(env, ws, apiKey, maxPages = 6) {
 
 async function runBodyBackfill(env, ws, apiKey, max = 10) {
   const { results } = await env.DB.prepare(
-    `SELECT id FROM emails WHERE ws=? AND body_html='' AND body_text='' AND body_checked=0
+    `SELECT id, campaign_id, lead_email, ue_type FROM emails WHERE ws=? AND body_html='' AND body_text='' AND body_checked=0
      ORDER BY CASE ue_type WHEN 2 THEN 0 WHEN 3 THEN 1 ELSE 2 END, timestamp_email DESC LIMIT ?`).bind(ws, max).all();
   if (!results.length) return 0;
-  const stmts = []; let filled = 0;
+  const stmts = []; let filled = 0; const bookingKeys = [];
   for (const row of results) {
     let e;
     try { e = await instantlyGet(env, `/emails/${row.id}`, null, apiKey); }
@@ -272,9 +276,14 @@ async function runBodyBackfill(env, ws, apiKey, max = 10) {
       stmts.push(env.DB.prepare('UPDATE emails SET body_html=?, body_text=?, preview=?, body_checked=1 WHERE id=?')
         .bind(b.html || '', b.text || '', (e.content_preview || '').slice(0, 300), row.id));
       filled++;
+      // Full body now available — detect our booking link (our sends only).
+      if ((row.ue_type === 1 || row.ue_type === 3) && (BOOKING_LINK_RE.test(b.text || '') || BOOKING_LINK_RE.test(b.html || ''))) {
+        bookingKeys.push(`${row.campaign_id || ''}|${(row.lead_email || '').toLowerCase()}`);
+      }
     } else stmts.push(env.DB.prepare('UPDATE emails SET body_checked=1 WHERE id=?').bind(row.id));
   }
   if (stmts.length) { await env.DB.batch(stmts); await bumpVersion(env); }
+  if (bookingKeys.length) await markCallPitched(env, bookingKeys);
   return filled;
 }
 
@@ -477,25 +486,32 @@ async function runRateExtraction(env) {
   await bumpVersion(env);
   return byLead.size;
 }
-async function runAutoStatus(env) {
+// Auto "Call Pitched" — the ONLY automatic status. Set when WE (ue_type 1/3)
+// send our own SuperProfile booking link. Detected at email ingest / body
+// backfill and applied only to the affected conversations (no per-minute
+// full-table keyword scans). Every other status — rates, WhatsApp, etc. — is
+// now set manually.
+const BOOKING_LINK_RE = /superprofile\.bio\/bookings\//i;
+function hasBookingLink(e) {
+  if (!e || (e.ue_type !== 1 && e.ue_type !== 3)) return false;
+  const b = e.body || {};
+  return BOOKING_LINK_RE.test(b.text || '') || BOOKING_LINK_RE.test(b.html || '');
+}
+// Mark the given "campaignId|leadEmail" conversations Call Pitched — but only
+// if they don't already have a status (never overrides a manual/existing one).
+async function markCallPitched(env, keys) {
+  const uniq = [...new Set((keys || []).filter(k => k && k.split('|')[1]))];
+  if (!uniq.length) return;
   const now = nowIso();
-  try { await runRateExtraction(env); } catch (e) { console.log('rate extract:', e.message); }
-  await env.DB.prepare(`UPDATE conversations SET status='', status_source='', updated_at=? WHERE status='rates_quoted' AND status_source='auto' AND quoted_usd IS NULL`).bind(now).run();
-  const rates = await env.DB.prepare(`UPDATE conversations SET status='rates_quoted', status_source='auto', updated_at=? WHERE status='' AND quoted_usd IS NOT NULL`).bind(now).run();
-  const wa = await env.DB.prepare(
-    `UPDATE conversations SET status='moved_to_wa', status_source='auto', updated_at=?
-     WHERE status='' AND EXISTS (SELECT 1 FROM emails e WHERE e.campaign_id = conversations.campaign_id AND e.lead_email = conversations.email
-       AND e.ue_type = 2 AND (lower(e.body_text) LIKE '%whatsapp%' OR e.body_text LIKE '%wa.me/%' OR lower(e.body_html) LIKE '%whatsapp%' OR e.body_html LIKE '%wa.me/%'))`).bind(now).run();
-  const pitch = await env.DB.prepare(
-    `UPDATE conversations SET status='call_pitched', status_source='auto', updated_at=?
-     WHERE status='' AND EXISTS (SELECT 1 FROM emails e WHERE e.campaign_id = conversations.campaign_id AND e.lead_email = conversations.email
-       AND e.ue_type IN (1, 3) AND (e.body_text LIKE '%superprofile.bio/bookings/%' OR e.body_html LIKE '%superprofile.bio/bookings/%'
-         OR e.body_text LIKE '%calendly.com%' OR e.body_html LIKE '%calendly.com%' OR e.body_text LIKE '%cal.com%' OR e.body_html LIKE '%cal.com%'
-         OR e.body_text LIKE '%meet.google.com%' OR e.body_html LIKE '%meet.google.com%' OR e.body_text LIKE '%zoom.us%' OR e.body_html LIKE '%zoom.us%'
-         OR e.body_text LIKE '%calendso%' OR e.body_html LIKE '%calendso%'))`).bind(now).run();
-  const changed = (rates.meta.changes || 0) + (wa.meta.changes || 0) + (pitch.meta.changes || 0);
-  if (changed) await bumpVersion(env);
-  return changed;
+  const stmts = [];
+  for (let i = 0; i < uniq.length; i += 45) {
+    const chunk = uniq.slice(i, i + 45);
+    const ph = chunk.map(() => '?').join(',');
+    stmts.push(env.DB.prepare(
+      `UPDATE conversations SET status='call_pitched', status_source='auto', updated_at=? WHERE key IN (${ph}) AND status=''`)
+      .bind(now, ...chunk));
+  }
+  if (stmts.length) { await env.DB.batch(stmts); await bumpVersion(env); }
 }
 
 /* ── link conversations → people (entries), and mirror the pipeline ──
@@ -627,8 +643,7 @@ async function runFullSync(env) {
   try { out.bodies = await runBodyBackfill(env, ws.id, key, 10); } catch (e) { out.bodyError = e.message; }
   try { out.enriched = await runEnrich(env, ws.id, key, 40); } catch (e) { out.enrichError = e.message; }
   try { out.labels = await runLabelBackfill(env, ws.id, key, 60); } catch (e) { out.labelError = e.message; }
-  try { out.autoStatus = await runAutoStatus(env); } catch (e) { out.autoStatusError = e.message; }
-  // Re-sync entries for everything auto-status just changed (status → pipeline).
+  // Re-sync entries for everything the sync touched (status → pipeline).
   try {
     const { results } = await env.DB.prepare("SELECT DISTINCT entry_id FROM conversations WHERE entry_id!=0").all();
     await syncEntriesFromConversations(env, results.map(r => r.entry_id));
@@ -643,7 +658,6 @@ async function runManualSync(env, ws) {
   const synced = await runSync(env, ws, key, 12);
   await runBodyBackfill(env, ws, key, 20);
   await runLabelBackfill(env, ws, key, 60);
-  await runAutoStatus(env);
   const { results } = await env.DB.prepare("SELECT DISTINCT entry_id FROM conversations WHERE entry_id!=0").all();
   await syncEntriesFromConversations(env, results.map(r => r.entry_id));
   return synced;
