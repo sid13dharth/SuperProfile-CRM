@@ -19,7 +19,7 @@
 import {
   runFullSync, runManualSync, ensureDefaultWorkspace, listWorkspaces, wsKey,
   recomputeConversations, linkConversations, emailUpsertStmt, instantlyPost, instantlyGet,
-  runRateExtraction, runBodyBackfill, USD_PER, AUTO_POC_NAMES,
+  runRateExtraction, runBodyBackfill, runReplyReconcile, USD_PER, AUTO_POC_NAMES,
 } from './sync.js';
 
 const SESSION_TTL_DAYS = 30;
@@ -843,6 +843,59 @@ async function handleApi(request, env, url) {
 
   /* — live check (no insert): powers the form's as-you-type preview — */
 
+  // Read-only batch lookup against OUR lead database (the `entries` table).
+  // Keyed with LOOKUP_KEY (same key the CRM uses) so other tools — e.g. the
+  // comment-scraper — can dedup against leads already in this database. Falls
+  // back to a logged-in session for manual browser testing. Mirrors the CRM's
+  // POST /api/lookup shape, but reports `in_db` (present in our lead database).
+  if (path === '/api/lookup' && method === 'POST') {
+    const lk = request.headers.get('x-lookup-key') || '';
+    const authed = env.LOOKUP_KEY && lk === env.LOOKUP_KEY;
+    if (!authed) await requireUser(env, request);
+
+    const emails = Array.isArray(body.emails)
+      ? [...new Set(body.emails.map(e => normEmail(e)).filter(Boolean))] : [];
+    const handles = Array.isArray(body.handles)
+      ? [...new Set(body.handles.map(h => normHandle(h)).filter(Boolean))] : [];
+    if (emails.length > 1000 || handles.length > 1000) throw new ApiError(400, 'Max 1000 identifiers per call');
+
+    const CHUNK = 90; // D1 caps bound parameters per query near 100
+    const results = [];
+
+    const byHandle = {};
+    for (let i = 0; i < handles.length; i += CHUNK) {
+      const part = handles.slice(i, i + CHUNK);
+      const { results: rows } = await env.DB.prepare(
+        `SELECT handle_norm, email, lead_owner, created_by, created_at, source, id
+         FROM entries WHERE handle_norm IN (${part.map(() => '?').join(',')})`).bind(...part).all();
+      for (const r of rows) byHandle[r.handle_norm] = r;
+    }
+    for (const h of handles) {
+      const r = byHandle[h];
+      results.push(r
+        ? { query: h, type: 'handle', in_db: true, owner: r.lead_owner || '', created_by: r.created_by || '',
+            source: r.source || 'added', email: r.email || '', created_at: r.created_at || '', id: r.id }
+        : { query: h, type: 'handle', in_db: false });
+    }
+
+    const byEmail = {};
+    for (let i = 0; i < emails.length; i += CHUNK) {
+      const part = emails.slice(i, i + CHUNK);
+      const { results: rows } = await env.DB.prepare(
+        `SELECT handle_norm, email_norm, lead_owner, created_by, created_at, source, id
+         FROM entries WHERE email_norm IN (${part.map(() => '?').join(',')})`).bind(...part).all();
+      for (const r of rows) if (!byEmail[r.email_norm]) byEmail[r.email_norm] = r;
+    }
+    for (const e of emails) {
+      const r = byEmail[e];
+      results.push(r
+        ? { query: e, type: 'email', in_db: true, owner: r.lead_owner || '', created_by: r.created_by || '',
+            source: r.source || 'added', handle: r.handle_norm || '', created_at: r.created_at || '', id: r.id }
+        : { query: e, type: 'email', in_db: false });
+    }
+    return json({ results });
+  }
+
   if (path === '/api/check' && method === 'POST') {
     await requireUser(env, request);
     return json(await checkLead(env, body));
@@ -1655,6 +1708,20 @@ async function handleApi(request, env, url) {
     if (!results.length) return json({ done: true, processed: 0, next: after });
     await linkConversations(env, results.map(r => r.key));
     return json({ done: results.length < limit, processed: results.length, next: results[results.length - 1].rid });
+  }
+
+  // One-time full reconciliation sweep: catch straggler replies the watermark
+  // skipped. Cursor-based (reconcile_cursor:{ws}); call repeatedly until
+  // {wrapped:true}. Admin only.
+  if (path === '/api/admin/reconcile' && method === 'POST') {
+    const user = await requireUser(env, request);
+    if (!user.is_admin) throw new ApiError(403, 'Only admins can run reconciliation');
+    const ws = Number(body.ws || 1) || 1;
+    const batch = Math.min(Number(body.batch || 300) || 300, 500);
+    const apiKey = await wsKey(env, ws);
+    if (!apiKey) throw new ApiError(400, 'Instantly is not configured for this workspace');
+    const res = await runReplyReconcile(env, ws, apiKey, batch);
+    return json(res);
   }
 
   // Instantly accounts (workspaces) — list only for now.

@@ -627,6 +627,67 @@ async function syncEntriesFromConversations(env, entryIds) {
   }
 }
 
+/* ── reply reconciliation: catch straggler replies the watermark missed ──
+ * The incremental sync advances a created-time watermark; an email indexed by
+ * Instantly a moment late (created-time already below the watermark) is skipped
+ * forever. This compares Instantly's per-lead reply count to what we've stored
+ * and re-fetches any lead we're behind on — regardless of how old. Cursor-based
+ * so the cron cycles through all conversations over time; also drivable as one
+ * full sweep via /api/admin/reconcile. */
+async function fetchLeadEmails(env, apiKey, email) {
+  let after = null, all = [];
+  for (let p = 0; p < 10; p++) {
+    const params = { limit: 100, lead: email };
+    if (after) params.starting_after = after;
+    const data = await instantlyGet(env, '/emails', params, apiKey);
+    const items = data.items || [];
+    all = all.concat(items);
+    if (!data.next_starting_after || items.length < 100) break;
+    after = data.next_starting_after;
+  }
+  return all;
+}
+async function runReplyReconcile(env, ws, apiKey, batch = 150) {
+  const cursor = parseInt(await metaGet(env, `reconcile_cursor:${ws}`, '0'), 10) || 0;
+  const { results: convs } = await env.DB.prepare(
+    'SELECT rowid AS rid, key, email, campaign_id, lead_reply_count FROM conversations WHERE ws=? AND rowid > ? ORDER BY rowid LIMIT ?')
+    .bind(ws, cursor, batch).all();
+  if (!convs.length) { await metaSetStmt(env, `reconcile_cursor:${ws}`, '0').run(); return { checked: 0, fixed: 0, wrapped: true }; }
+  // Instantly's reply count per (campaign|email) for this batch's leads.
+  const emails = [...new Set(convs.map(c => (c.email || '').toLowerCase()).filter(Boolean))];
+  const countByKey = new Map();
+  for (let i = 0; i < emails.length; i += 100) {
+    const chunk = emails.slice(i, i + 100);
+    let after = null;
+    for (let p = 0; p < 5; p++) {
+      const body = { contacts: chunk, limit: 100 };
+      if (after) body.starting_after = after;
+      const data = await instantlyPost(env, '/leads/list', body, apiKey);
+      for (const it of (data.items || [])) {
+        const k = `${it.campaign || ''}|${(it.email || '').toLowerCase()}`;
+        countByKey.set(k, Math.max(countByKey.get(k) || 0, Number(it.email_reply_count) || 0));
+      }
+      if (!data.next_starting_after || (data.items || []).length < 100) break;
+      after = data.next_starting_after;
+    }
+  }
+  // Leads where Instantly reports MORE replies than we stored → re-fetch thread.
+  const behind = convs.filter(c => (countByKey.get(`${c.campaign_id}|${(c.email || '').toLowerCase()}`) || 0) > (c.lead_reply_count || 0));
+  const fixedKeys = [];
+  for (const c of behind) {
+    try {
+      const mails = await fetchLeadEmails(env, apiKey, c.email);
+      const ups = mails.filter(e => e.id).map(e => emailUpsertStmt(env, e, ws));
+      for (let i = 0; i < ups.length; i += 50) await env.DB.batch(ups.slice(i, i + 50));
+      fixedKeys.push(c.key);
+    } catch (e) { /* skip on error; a later cycle retries this lead */ }
+  }
+  if (fixedKeys.length) { await recomputeConversations(env, fixedKeys); await bumpVersion(env); }
+  const nextCursor = convs[convs.length - 1].rid;
+  await metaSetStmt(env, `reconcile_cursor:${ws}`, String(nextCursor)).run();
+  return { checked: convs.length, behind: behind.length, fixed: fixedKeys.length, next: nextCursor };
+}
+
 /* ── top-level ticks ── */
 async function runFullSync(env) {
   await ensureDefaultWorkspace(env);
@@ -643,6 +704,10 @@ async function runFullSync(env) {
   try { out.bodies = await runBodyBackfill(env, ws.id, key, 10); } catch (e) { out.bodyError = e.message; }
   try { out.enriched = await runEnrich(env, ws.id, key, 40); } catch (e) { out.enrichError = e.message; }
   try { out.labels = await runLabelBackfill(env, ws.id, key, 60); } catch (e) { out.labelError = e.message; }
+  // Self-heal: reconcile a slice of conversations against Instantly's reply
+  // counts each tick, cycling through all of them, to catch straggler replies
+  // the watermark skipped (any age).
+  try { out.reconciled = await runReplyReconcile(env, ws.id, key, 150); } catch (e) { out.reconcileError = e.message; }
   // Re-sync entries for everything the sync touched (status → pipeline).
   try {
     const { results } = await env.DB.prepare("SELECT DISTINCT entry_id FROM conversations WHERE entry_id!=0").all();
@@ -667,5 +732,5 @@ export {
   runFullSync, runManualSync, ensureDefaultWorkspace, listWorkspaces, wsKey,
   recomputeConversations, linkConversations, syncEntriesFromConversations,
   emailUpsertStmt, crmSuggest, INSTANTLY_LABEL_MAP, AUTO_POC_NAMES,
-  instantlyPost, instantlyGet, runRateExtraction, runBodyBackfill, USD_PER,
+  instantlyPost, instantlyGet, runRateExtraction, runBodyBackfill, runReplyReconcile, USD_PER,
 };
