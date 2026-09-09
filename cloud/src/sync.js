@@ -708,10 +708,22 @@ async function runFullSync(env) {
   // counts each tick, cycling through all of them, to catch straggler replies
   // the watermark skipped (any age).
   try { out.reconciled = await runReplyReconcile(env, ws.id, key, 150); } catch (e) { out.reconcileError = e.message; }
-  // Re-sync entries for everything the sync touched (status → pipeline).
+  // Pipeline re-projection. Leads touched THIS tick were already refreshed live
+  // by runSync→linkConversations / runEnrich / runReplyReconcile. This is just a
+  // rolling safety net: re-verify a bounded slice of entries per tick, cycling
+  // through all of them via a cursor — so a single run never fans out into tens
+  // of thousands of statements (which would blow the per-invocation limits and
+  // could silently stall the pipeline as the data grows).
   try {
-    const { results } = await env.DB.prepare("SELECT DISTINCT entry_id FROM conversations WHERE entry_id!=0").all();
-    await syncEntriesFromConversations(env, results.map(r => r.entry_id));
+    const cursor = parseInt(await metaGet(env, `reproj_cursor:${ws.id}`, '0'), 10) || 0;
+    const { results } = await env.DB.prepare(
+      'SELECT DISTINCT entry_id FROM conversations WHERE entry_id > ? AND entry_id!=0 ORDER BY entry_id LIMIT 200').bind(cursor).all();
+    if (results.length) {
+      await syncEntriesFromConversations(env, results.map(r => r.entry_id));
+      await metaSetStmt(env, `reproj_cursor:${ws.id}`, String(results[results.length - 1].entry_id)).run();
+    } else {
+      await metaSetStmt(env, `reproj_cursor:${ws.id}`, '0').run(); // wrap to the start
+    }
   } catch (e) { out.entrySyncError = e.message; }
   out.ws = ws.id;
   return out;
