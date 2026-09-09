@@ -19,7 +19,7 @@
 import {
   runFullSync, runManualSync, ensureDefaultWorkspace, listWorkspaces, wsKey,
   recomputeConversations, linkConversations, emailUpsertStmt, instantlyPost, instantlyGet,
-  runRateExtraction, runBodyBackfill, runReplyReconcile, USD_PER, AUTO_POC_NAMES,
+  runRateExtraction, runBodyBackfill, runReplyReconcile, fetchLeadEmails, USD_PER, AUTO_POC_NAMES,
 } from './sync.js';
 
 const SESSION_TTL_DAYS = 30;
@@ -38,6 +38,18 @@ function json(data, status = 200, headers = {}) {
     status,
     headers: { 'Content-Type': 'application/json', ...headers },
   });
+}
+
+// Find the LEAD's email in a webhook payload of unknown shape. Prefers keys that
+// mention "lead"; avoids our own sending-account addresses (eaccount/from/...).
+function findLeadEmail(obj, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 4) return '';
+  const isEmail = v => typeof v === 'string' && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v.trim());
+  const bad = k => /account|eaccount|from|sender|reply_to|owner/i.test(k);
+  for (const [k, v] of Object.entries(obj)) if (isEmail(v) && /lead/i.test(k) && !bad(k)) return v.toLowerCase().trim();
+  for (const [k, v] of Object.entries(obj)) if (isEmail(v) && /email|mail|contact/i.test(k) && !bad(k)) return v.toLowerCase().trim();
+  for (const v of Object.values(obj)) { if (v && typeof v === 'object') { const r = findLeadEmail(v, depth + 1); if (r) return r; } }
+  return '';
 }
 
 class ApiError extends Error {
@@ -595,6 +607,33 @@ async function handleApi(request, env, url) {
   const method = request.method;
   const body = (method === 'POST' || method === 'DELETE' || method === 'PUT' || method === 'PATCH')
     ? await request.json().catch(() => ({})) : {};
+
+  /* — Instantly webhook: instant reply reflection (no session; shared secret) — */
+  if (path === '/api/webhook/instantly' && method === 'POST') {
+    const secret = url.searchParams.get('secret') || request.headers.get('x-webhook-secret') || '';
+    if (!env.WEBHOOK_SECRET || secret !== env.WEBHOOK_SECRET) return new Response('unauthorized', { status: 401 });
+    // Keep the last raw payload for shape inspection/debugging.
+    try { await metaSetStmt(env, 'last_webhook', JSON.stringify(body).slice(0, 3000)).run(); } catch (e) { /* noop */ }
+    // Pull the lead email + campaign out of whatever shape Instantly sends.
+    const lead = (String(body.lead_email || body.email || body.lead || (body.lead_data && body.lead_data.email) || (body.data && (body.data.lead_email || body.data.email)) || '').toLowerCase().trim()) || findLeadEmail(body);
+    const campaign = String(body.campaign_id || body.campaign || (body.campaign_data && body.campaign_data.id) || (body.data && (body.data.campaign_id || body.data.campaign)) || '').trim();
+    if (!lead) return json({ ok: true, ignored: 'no lead email in payload' });
+    // Which workspace's Instantly key to use for the authoritative re-fetch.
+    let ws = Number(url.searchParams.get('ws') || 0) || 0;
+    if (!ws && campaign) { const c = await env.DB.prepare('SELECT ws FROM campaigns WHERE id=?').bind(campaign).first(); if (c) ws = c.ws; }
+    if (!ws) { const cv = await env.DB.prepare('SELECT ws FROM conversations WHERE email=? LIMIT 1').bind(lead).first(); ws = (cv && cv.ws) || 1; }
+    const apiKey = await wsKey(env, ws);
+    try {
+      // Authoritative: re-fetch this lead's thread from Instantly, upsert, recompute.
+      const mails = await fetchLeadEmails(env, apiKey, lead);
+      const ups = mails.filter(e => e.id).map(e => emailUpsertStmt(env, e, ws));
+      for (let i = 0; i < ups.length; i += 50) await env.DB.batch(ups.slice(i, i + 50));
+      const pairs = [...new Set(mails.map(e => `${e.campaign_id || campaign || ''}|${lead}`).filter(p => p.split('|')[1]))];
+      if (pairs.length) { await recomputeConversations(env, pairs); await linkConversations(env, pairs); }
+      await bumpVersion(env);
+      return json({ ok: true, lead, ws, emails: mails.length, updated: pairs.length });
+    } catch (e) { return json({ ok: false, error: e.message }, 502); }
+  }
 
   /* — session / setup — */
 

@@ -744,5 +744,5 @@ export {
   runFullSync, runManualSync, ensureDefaultWorkspace, listWorkspaces, wsKey,
   recomputeConversations, linkConversations, syncEntriesFromConversations,
   emailUpsertStmt, crmSuggest, INSTANTLY_LABEL_MAP, AUTO_POC_NAMES,
-  instantlyPost, instantlyGet, runRateExtraction, runBodyBackfill, runReplyReconcile, USD_PER,
+  instantlyPost, instantlyGet, runRateExtraction, runBodyBackfill, runReplyReconcile, fetchLeadEmails, USD_PER,
 };
