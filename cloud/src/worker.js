@@ -962,7 +962,7 @@ async function handleApi(request, env, url) {
                      created_at: existing.created_at, email: existing.email, id: existing.id,
                      source: existing.source || 'added' },
         in_master: existing.source === 'master',
-        crm: await liveCrm(env, email, handle),
+        crm: await localCrm(env, email, handle),
       });
     }
 
@@ -977,14 +977,16 @@ async function handleApi(request, env, url) {
                        created_at: byEmail.created_at, email: byEmail.email, id: byEmail.id,
                        source: byEmail.source || 'added', matched_on: 'email' },
           in_master: byEmail.source === 'master',
-          crm: await liveCrm(env, email, handle),
+          crm: await localCrm(env, email, handle),
         });
       }
     }
 
-    // Prior-conversation snapshot from the CRM (best-effort — never blocks the save).
-    const crmResults = await crmLookup(env, email ? [email] : [], [handle]);
-    const sig = pickCrmSignal(crmResults);
+    // Prior-conversation snapshot from the LOCAL merged conversations (retired the
+    // external CRM lookup — never blocks the save).
+    const local = await localCrm(env, email, handle);
+    const sig = local.signal;
+    const crmResults = local.results;
     const snap = crmSnapshot(sig);
     const created = nowIso();
     // Initial pipeline placement: a fresh lead is in "Leads"; if the CRM already
@@ -1135,7 +1137,6 @@ async function handleApi(request, env, url) {
 
   if (path === '/api/entries/refresh-crm' && method === 'POST') {
     await requireUser(env, request);
-    if (!env.LOOKUP_KEY) throw new ApiError(400, 'CRM lookup is not configured (LOOKUP_KEY missing)');
 
     const afterId = parseInt(body.after_id, 10) || 0;
     const batch = Math.min(parseInt(body.batch, 10) || 1000, 3000);
@@ -1150,24 +1151,27 @@ async function handleApi(request, env, url) {
     // Batch the CRM lookups in small chunks — the CRM resolves emails via a
     // `email IN (…)` query and D1 caps bound parameters per query, so keep each
     // call well under that limit.
-    const CRM_CHUNK = 90;          // emails use `email IN (…)` → bound by D1 param cap
-    const HANDLE_CHUNK = 500;      // handles resolve via a single CRM scan per call → no param cap
+    // Re-derive each lead's prior-conversation signal from the LOCAL merged
+    // conversations (retired the external CRM). Batched by email + handle.
+    const CHUNK = 90; // D1 caps bound parameters per query near 100
     const emails = [...new Set(rows.map(r => r.email_norm).filter(Boolean))];
-    // Handle-match EVERY lead with a handle (not just emailless ones): many CRM
-    // leads carry a different/no email but the same Instagram handle, and email
-    // alone misses them. Email is still preferred in the pick below.
     const handles = [...new Set(rows.map(r => r.handle_norm).filter(Boolean))];
+    const groupsByEmail = {}, groupsByHandle = {};
+    for (let i = 0; i < emails.length; i += CHUNK) {
+      const chunk = emails.slice(i, i + CHUNK);
+      const { results } = await env.DB.prepare(
+        `SELECT email, handle_norm, ${CONV_SIG_COLS} FROM conversations WHERE email IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+      for (const r of results) if (r.email) (groupsByEmail[r.email] = groupsByEmail[r.email] || []).push(r);
+    }
+    for (let i = 0; i < handles.length; i += CHUNK) {
+      const chunk = handles.slice(i, i + CHUNK);
+      const { results } = await env.DB.prepare(
+        `SELECT email, handle_norm, ${CONV_SIG_COLS} FROM conversations WHERE handle_norm IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+      for (const r of results) if (r.handle_norm) (groupsByHandle[r.handle_norm] = groupsByHandle[r.handle_norm] || []).push(r);
+    }
     const byEmail = {}, byHandle = {};
-    for (let i = 0; i < emails.length; i += CRM_CHUNK) {
-      const lk = await crmLookup(env, emails.slice(i, i + CRM_CHUNK), []);
-      if (!Array.isArray(lk)) throw new ApiError(502, (lk && lk.error) || 'CRM lookup failed');
-      for (const r of lk) if (r.type === 'email') byEmail[r.query] = r;
-    }
-    for (let i = 0; i < handles.length; i += HANDLE_CHUNK) {
-      const lk = await crmLookup(env, [], handles.slice(i, i + HANDLE_CHUNK));
-      if (!Array.isArray(lk)) throw new ApiError(502, (lk && lk.error) || 'CRM lookup failed');
-      for (const r of lk) if (r.type === 'handle') byHandle[r.query] = r;
-    }
+    for (const em of emails) { const s = sigFromConvRows(groupsByEmail[em], em); if (s) byEmail[em] = s; }
+    for (const h of handles) { const s = sigFromConvRows(groupsByHandle[h], h); if (s) byHandle[h] = s; }
 
     let updated = 0;
     const stmts = [];
@@ -1189,16 +1193,19 @@ async function handleApi(request, env, url) {
         if (sug) { setStage = 1; autoStage = sug.stage; setPos = 1; autoPos = sug.position; }
         else if (s.crm_replied) { setStage = 1; autoStage = 'Responses'; } // reply, no status detail → Responses bucket
       }
+      // NOTE: crm_deal is deliberately NOT written here — the local signal carries
+      // no rate data (that lives in conversations and is maintained by the sync's
+      // syncEntriesFromConversations). Writing it would blank the grid deal columns.
       stmts.push(env.DB.prepare(
         `UPDATE entries SET crm_known=?, crm_contacted=?, crm_replied=?, crm_status=?, crm_poc=?,
            crm_campaigns=?, crm_last_contact_at=?, crm_last_reply_at=?, crm_checked_at=?,
-           crm_label=?, crm_deal=?,
+           crm_label=?,
            stage=CASE WHEN ?=1 THEN ? ELSE stage END,
            position=CASE WHEN ?=1 THEN ? ELSE position END,
            first_name=CASE WHEN first_name='' THEN ? ELSE first_name END WHERE id=?`)
         .bind(s.crm_known, s.crm_contacted, s.crm_replied, s.crm_status, s.crm_poc,
               s.crm_campaigns, s.crm_last_contact_at, s.crm_last_reply_at, s.crm_checked_at,
-              s.crm_label, s.crm_deal, setStage, autoStage, setPos, autoPos, s.crm_first_name, row.id));
+              s.crm_label, setStage, autoStage, setPos, autoPos, s.crm_first_name, row.id));
     }
     for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
     await bumpVersion(env);
@@ -1441,6 +1448,54 @@ async function handleApi(request, env, url) {
       .filter(t => !currentLatest || t.last_msg_at < currentLatest)
       .sort((a, b) => (a.last_msg_at < b.last_msg_at ? 1 : -1));
     return json({ emails: cur, notes: notesRes.results, activity: actRes.results, other_threads });
+  }
+
+  // Full lead detail for the in-app conversation popup (READ-ONLY): the entire
+  // email thread across all campaigns + notes + activity + linked videos + every
+  // lead field. Sourced entirely from the LOCAL merged data (no external CRM).
+  if (path === '/api/lead/detail' && method === 'GET') {
+    await requireUser(env, request);
+    const entryId = parseInt(url.searchParams.get('entry_id'), 10) || 0;
+    const emailParam = normEmail(url.searchParams.get('email') || '');
+    let entry = null;
+    if (entryId) entry = await env.DB.prepare('SELECT * FROM entries WHERE id=?').bind(entryId).first();
+    else if (emailParam) entry = await env.DB.prepare('SELECT * FROM entries WHERE email_norm=? ORDER BY id LIMIT 1').bind(emailParam).first();
+    if (!entry) throw new ApiError(404, 'Lead not found');
+    const em = entry.email_norm || normEmail(entry.email);
+    const h = entry.handle_norm || '';
+    const [convRes, campRes, vidRes] = await env.DB.batch([
+      env.DB.prepare(`SELECT key, campaign_id, email, status, last_msg_at FROM conversations WHERE (? != '' AND email=?) OR (? != '' AND handle_norm=?)`).bind(em, em, h, h),
+      env.DB.prepare('SELECT id, name FROM campaigns'),
+      env.DB.prepare("SELECT * FROM videos WHERE entry_id=? ORDER BY (date_posted!='') DESC, date_posted DESC, id DESC").bind(entry.id),
+    ]);
+    const names = Object.fromEntries(campRes.results.map(r => [r.id, r.name]));
+    // Thread = every email for the entry's own address PLUS every address seen on
+    // its matched conversations (covers handle-only leads whose email lives on the
+    // linked conversation, not the entry).
+    const mailAddrs = [...new Set([em, ...convRes.results.map(c => (c.email || '').toLowerCase())].filter(Boolean))];
+    let emailsOut = [];
+    if (mailAddrs.length) {
+      const eph = mailAddrs.map(() => '?').join(',');
+      const { results: er } = await env.DB.prepare(
+        `SELECT id, campaign_id, ue_type, from_email, to_email, subject, preview, body_html, body_text, timestamp_email, eaccount
+         FROM emails WHERE lead_email IN (${eph}) ORDER BY timestamp_email ASC`).bind(...mailAddrs).all();
+      emailsOut = er.map(m => ({ ...m, campaign_name: names[m.campaign_id] || '' }));
+    }
+    const keys = convRes.results.map(c => c.key);
+    let notes = [], activity = [];
+    if (keys.length) {
+      const ph = keys.map(() => '?').join(',');
+      const [nRes, aRes] = await env.DB.batch([
+        env.DB.prepare(`SELECT author, text, created_at FROM notes WHERE lead_key IN (${ph}) ORDER BY id`).bind(...keys),
+        env.DB.prepare(`SELECT author, kind, detail, created_at FROM activity WHERE lead_key IN (${ph}) ORDER BY id DESC LIMIT 50`).bind(...keys),
+      ]);
+      notes = nRes.results; activity = aRes.results;
+    }
+    return json({
+      entry: entryDict(entry, ''),
+      emails: emailsOut, notes, activity, videos: vidRes.results,
+      conversations: convRes.results.map(c => ({ campaign_id: c.campaign_id, campaign_name: names[c.campaign_id] || '', status: c.status })),
+    });
   }
 
   // Outreach status vocabulary (drives the pipeline auto-map + inbox forms).
@@ -1801,6 +1856,47 @@ async function liveCrm(env, email, handle) {
   return { results: Array.isArray(results) ? results : [], signal: pickCrmSignal(results), error: crmError(results) };
 }
 
+// Prior-conversation signal sourced from the LOCAL merged conversations table
+// (post-merge replacement for the retired external-CRM lookup). A conversation
+// row only exists once a lead has replied, so its presence means the lead is
+// known + contacted + replied. Same { results, signal, error } shape as liveCrm.
+// Build a prior-conversation signal from a lead's conversation rows. A row only
+// exists once the lead has replied → known + contacted + replied.
+const CONV_SIG_COLS = 'campaign_id, status, last_lead_msg_at, last_our_msg_at, last_msg_at, first_reply_at, lead_reply_count, poc, label, first_name';
+function sigFromConvRows(rows, query) {
+  if (!rows || !rows.length) return null;
+  const sorted = rows.slice().sort((a, b) => (a.last_msg_at || '') < (b.last_msg_at || '') ? 1 : -1); // most recent first
+  const replied = rows.some(r => (r.lead_reply_count || 0) > 0 || r.first_reply_at);
+  return {
+    type: 'local', query: query || '', known: true, contacted: true, replied: !!replied,
+    status: sorted[0].status || '', poc: (rows.find(r => r.poc) || {}).poc || '',
+    label: (rows.find(r => r.label) || {}).label || '', first_name: (rows.find(r => r.first_name) || {}).first_name || '',
+    campaigns: [...new Set(rows.map(r => r.campaign_id).filter(Boolean))],
+    last_contact_at: rows.map(r => r.last_our_msg_at || r.last_msg_at || '').filter(Boolean).sort().pop() || '',
+    last_reply_at: rows.map(r => r.last_lead_msg_at || '').filter(Boolean).sort().pop() || '',
+  };
+}
+async function localCrm(env, email, handle) {
+  const em = normEmail(email), h = normHandle(handle || '');
+  if (!em && !h) return { results: [], signal: null, error: '' };
+  const { results: rows } = await env.DB.prepare(
+    `SELECT ${CONV_SIG_COLS} FROM conversations WHERE (? != '' AND email = ?) OR (? != '' AND handle_norm = ?)`)
+    .bind(em, em, h, h).all();
+  let signal = sigFromConvRows(rows, em || h);
+  // No conversation (= no reply). Best-effort "contacted, never replied": did we
+  // ever send this address an email? (Send coverage in `emails` is partial, so
+  // this can under-report, but a real reply would have created a conversation.)
+  if (!signal && em) {
+    const r = await env.DB.prepare(
+      "SELECT COUNT(*) n, MAX(timestamp_email) last_at FROM emails WHERE lead_email=? AND ue_type IN (1,3)").bind(em).first();
+    if (r && r.n > 0) {
+      signal = { type: 'local', query: em, known: true, contacted: true, replied: false,
+        status: '', poc: '', label: '', first_name: '', campaigns: [], last_contact_at: r.last_at || '', last_reply_at: '' };
+    }
+  }
+  return { results: signal ? [signal] : [], signal, error: '' };
+}
+
 // Add many leads at once (paste or CSV). Runs each row through the SAME dedup
 // (entries + master) and CRM check as the single-add path, but batches the
 // lookups so a 500-row paste is a handful of queries, not 1500. Returns a
@@ -1833,13 +1929,24 @@ async function bulkAdd(env, user, rawRows) {
     for (const e of ex) existMap[e.handle_norm] = e;
   }
 
-  // One batched CRM lookup for the whole paste.
+  // Prior-conversation signals for the whole paste, from the LOCAL merged
+  // conversations (retired the external CRM), batched by email + handle.
   const emails = [...new Set(rows.map(r => r.email).filter(Boolean))].slice(0, 1000);
   const handles = uniqueHandles.slice(0, 1000);
-  const lk = env.LOOKUP_KEY ? await crmLookup(env, emails, handles) : null;
-  const byEmail = {}, byHandle = {};
-  if (Array.isArray(lk)) for (const r of lk) { if (r.type === 'email') byEmail[r.query] = r; else if (r.type === 'handle') byHandle[r.query] = r; }
-  const crmErr = crmError(lk);
+  const byEmail = {}, byHandle = {}, gE = {}, gH = {};
+  for (let i = 0; i < emails.length; i += 90) { // D1 caps bound params near 100
+    const chunk = emails.slice(i, i + 90);
+    const { results } = await env.DB.prepare(`SELECT email, handle_norm, ${CONV_SIG_COLS} FROM conversations WHERE email IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+    for (const r of results) if (r.email) (gE[r.email] = gE[r.email] || []).push(r);
+  }
+  for (let i = 0; i < handles.length; i += 90) { // D1 caps bound params near 100
+    const chunk = handles.slice(i, i + 90);
+    const { results } = await env.DB.prepare(`SELECT email, handle_norm, ${CONV_SIG_COLS} FROM conversations WHERE handle_norm IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+    for (const r of results) if (r.handle_norm) (gH[r.handle_norm] = gH[r.handle_norm] || []).push(r);
+  }
+  for (const em of emails) { const s = sigFromConvRows(gE[em], em); if (s) byEmail[em] = s; }
+  for (const h of handles) { const s = sigFromConvRows(gH[h], h); if (s) byHandle[h] = s; }
+  const crmErr = '';
 
   const pickSig = (email, handle) =>
     (email && byEmail[email] && byEmail[email].known) ? byEmail[email]
@@ -1982,12 +2089,13 @@ async function editEntry(env, user, body) {
   }
 
   if (identityChanged) {
-    const crmResults = await crmLookup(env, newEmailNorm ? [newEmailNorm] : [], newHandle ? [newHandle] : []);
-    const snap = crmSnapshot(pickCrmSignal(crmResults));
+    // crm_deal intentionally left untouched — deal/rate data is owned by the sync
+    // (from conversations); the local signal has none and would blank it.
+    const snap = crmSnapshot((await localCrm(env, newEmailNorm, newHandle)).signal);
     sets.push('crm_known=?', 'crm_contacted=?', 'crm_replied=?', 'crm_status=?', 'crm_poc=?',
-      'crm_campaigns=?', 'crm_last_contact_at=?', 'crm_last_reply_at=?', 'crm_checked_at=?', 'crm_label=?', 'crm_deal=?');
+      'crm_campaigns=?', 'crm_last_contact_at=?', 'crm_last_reply_at=?', 'crm_checked_at=?', 'crm_label=?');
     args.push(snap.crm_known, snap.crm_contacted, snap.crm_replied, snap.crm_status, snap.crm_poc,
-      snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at, snap.crm_label, snap.crm_deal);
+      snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at, snap.crm_label);
   }
 
   if (!sets.length) return { ok: true, entry: entryDict(row, env.CRM_URL || ''), unchanged: true };
@@ -2033,7 +2141,7 @@ async function checkLead(env, body) {
       if (byEmail.source === 'master') inMaster = true;
     }
   }
-  const crm = (env.LOOKUP_KEY) ? await liveCrm(env, email, handle) : null;
+  const crm = await localCrm(env, email, handle);
   const sig = crm ? crm.signal : null;
   return {
     handle, email,

@@ -98,10 +98,6 @@ function showApp() {
   $('who').textContent = state.me.display_name || state.me.username;
   $('owner-name').textContent = state.me.display_name || state.me.username;
   if (state.me.is_admin) $('team-btn').style.display = '';
-  if (!state.lookupConfigured) {
-    // Make it obvious the CRM check is offline until the secret is set.
-    $('refresh-crm-btn').title = 'CRM lookup not configured (LOOKUP_KEY missing on the worker)';
-  }
   loadCategories();
   loadTeam();
   loadPipeline().then(() => switchTab('leads'));
@@ -387,31 +383,79 @@ function renderSignals(box, res) {
 }
 
 function renderCrmSignal(box, crm, email) {
-  if (!state.lookupConfigured) {
-    box.appendChild(sig('muted', '💤', `CRM prior-conversation check is not configured.`));
-    return;
-  }
   if (!crm) return;
-  if (crm.error) { box.appendChild(sig('muted', '⚠️', `CRM check unavailable<small>${esc(crm.error)}</small>`)); return; }
+  if (crm.error) { box.appendChild(sig('muted', '⚠️', `Prior-conversation check unavailable<small>${esc(crm.error)}</small>`)); return; }
   const s = crm.signal;
   if (!s || !s.known) {
-    box.appendChild(sig('green', '📭', `<b>No prior conversation.</b> Not found in the CRM — safe to pursue.`));
+    box.appendChild(sig('green', '📭', `<b>No prior conversation.</b> No replies from this lead in our records — safe to pursue.`));
     return;
   }
   const camps = (s.campaigns || []).join(', ');
-  const link = email && state.crmUrl ? `${state.crmUrl.replace(/\/+$/, '')}/?lead=${encodeURIComponent(email)}` : '';
-  const view = link ? ` · <a href="${esc(link)}" target="_blank" rel="noopener">View conversation ↗</a>` : '';
   if (s.replied) {
     box.appendChild(sig('red', '💬',
-      `<b>Prior conversation — do NOT re-pitch.</b>${view}` +
+      `<b>Prior conversation — do NOT re-pitch.</b>` +
       `<small>${s.status ? 'Status: ' + esc(s.status) + ' · ' : ''}${s.poc ? 'POC: ' + esc(s.poc) + ' · ' : ''}` +
       `${s.last_reply_at ? 'Last reply ' + esc(fmtDate(s.last_reply_at)) : ''}${camps ? ' · ' + esc(camps) : ''}</small>`));
   } else {
     box.appendChild(sig('orange', '📨',
-      `<b>Contacted before, never replied.</b> Still OK to reach out.${view}` +
+      `<b>Contacted before, never replied.</b> Still OK to reach out.` +
       `<small>${s.status ? 'Status: ' + esc(s.status) + ' · ' : ''}${camps ? esc(camps) : ''}` +
       `${s.last_contact_at ? ' · Last contact ' + esc(fmtDate(s.last_contact_at)) : ''}</small>`));
   }
+}
+
+/* ── read-only conversation popup (Responses tab) ─────────────── */
+function convDateTime(ts) {
+  if (!ts) return '';
+  try { const d = new Date(ts); return isNaN(d) ? esc(ts) : esc(d.toLocaleString()); } catch (e) { return esc(ts); }
+}
+function convMsgHtml(m) {
+  const them = m.ue_type === 2;                 // 2 = lead reply; 1/3 = our send
+  const who = them ? (m.from_email || 'Lead') : 'You';
+  let text = (m.body_text || '').trim();
+  if (!text && m.body_html) text = m.body_html.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').trim();
+  if (!text) text = m.preview || '';
+  const body = esc(text).replace(/\n/g, '<br>') || '<i>(no content)</i>';
+  return `<div class="cmsg ${them ? 'them' : 'us'}">`
+    + `<div class="cmsg-h"><b>${esc(who)}</b> · ${convDateTime(m.timestamp_email)}${m.campaign_name ? ' · ' + esc(m.campaign_name) : ''}</div>`
+    + `<div class="cmsg-b">${body}</div></div>`;
+}
+async function openConvModal(e) {
+  const bg = $('conv-bg'); bg.classList.add('open');
+  if (!bg._wired) {
+    bg._wired = true;
+    $('conv-close').onclick = () => bg.classList.remove('open');
+    bg.addEventListener('click', ev => { if (ev.target === bg) bg.classList.remove('open'); });
+    document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && bg.classList.contains('open')) bg.classList.remove('open'); });
+  }
+  $('conv-title').textContent = e.first_name ? `${e.first_name} · @${e.handle || ''}` : (e.handle ? '@' + e.handle : (e.email || 'Lead'));
+  $('conv-body').innerHTML = '<div class="empty">Loading conversation…</div>';
+  let d;
+  try { d = await api('/api/lead/detail?entry_id=' + encodeURIComponent(e.id)); }
+  catch (err) { $('conv-body').innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
+  const en = d.entry || e, dl = en.deal || {};
+  const det = [];
+  const row = (k, v) => { if (v) det.push(`<div><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`); };
+  row('Email', en.email ? esc(en.email) : '');
+  row('Handle', en.handle ? `<a href="${esc(en.social_url || ('https://instagram.com/' + en.handle))}" target="_blank" rel="noopener">@${esc(en.handle)}</a>` : '');
+  row('Stage', [en.stage, en.position].filter(Boolean).map(esc).join(' › '));
+  row('Status', en.status ? esc(en.status) : '');
+  row('Label', en.label ? esc(en.label) : '');
+  row('POC', (en.crm && en.crm.poc) ? esc(en.crm.poc) : '');
+  row('Lead owner', en.lead_owner ? esc(en.lead_owner) : '');
+  row('Category', en.category ? esc(en.category) : '');
+  row('Quoted rate', (dl.final_rate || dl.initial_rate) ? esc(dl.final_rate || dl.initial_rate) : '');
+  row('Deliverables', dl.deliverables ? esc(dl.deliverables) : '');
+  row('Notes', en.notes ? esc(en.notes).replace(/\n/g, '<br>') : '');
+  const emails = d.emails || [];
+  const thread = emails.length ? emails.slice().reverse().map(convMsgHtml).join('') : '<div class="empty">No emails on record for this lead.</div>';
+  const sec = (title, items, fn) => items && items.length ? `<div class="conv-sec"><h4>${esc(title)} (${items.length})</h4>${items.map(fn).join('')}</div>` : '';
+  const vids = sec('Videos', d.videos, v => `<div>${v.url ? `<a href="${esc(v.url)}" target="_blank" rel="noopener">${esc((v.url || '').replace(/^https?:\/\//, '').slice(0, 55))}</a>` : esc(v.lead_name || '—')}${v.budget ? ' · ' + esc(v.budget) : ''}${v.date_posted ? ' · ' + esc(fmtDate(v.date_posted)) : ''}</div>`);
+  const notes = sec('Notes', d.notes, n => `<div><b>${esc(n.author || '')}</b> <span class="muted">${esc(fmtDate(n.created_at))}</span><br>${esc(n.text || '').replace(/\n/g, '<br>')}</div>`);
+  const act = sec('Activity', d.activity, a => `<div class="muted small">${esc(fmtDate(a.created_at))} · ${esc(a.author || '')} · ${esc(a.kind || '')}${a.detail ? ': ' + esc(a.detail) : ''}</div>`);
+  $('conv-body').innerHTML =
+    `<div class="conv-cols"><div class="conv-detail"><h4>Lead details</h4>${det.join('') || '<div class="muted">—</div>'}${vids}${notes}${act}</div>`
+    + `<div class="conv-thread"><h4>Conversation (${emails.length})</h4>${thread}</div></div>`;
 }
 
 function sig(tone, ic, html) {
@@ -699,7 +743,7 @@ function statusChipHtml(e) {
   const view = e.view_conversation ? ` <a class="vc" href="${esc(e.view_conversation)}" target="_blank" rel="noopener" title="View conversation">↗</a>` : '';
   const st = (e.crm && e.crm.status) ? ` <span class="stx" title="CRM status">${esc(e.crm.status)}</span>` : '';
   const poc = (e.crm && e.crm.poc) ? `<span class="pocmini">POC: ${esc(e.crm.poc)}</span>` : '';
-  return `<span class="chip ${tone}">${label}</span>${view}${st}${poc}`;
+  return `<span class="chip ${tone}">${label}</span>${st}${poc}`;
 }
 
 function rowHtml(e, cols) {
@@ -710,7 +754,9 @@ function rowHtml(e, cols) {
   // Move-to-Closed / Move-to-Failed buttons on the movable lead tabs.
   const mv = ['leads', 'responses', 'all'].includes(state.tab)
     ? `<button class="mv close-btn" title="Mark Closed">✔</button><button class="mv fail-btn" title="Mark Failed">✘</button>` : '';
-  return `<tr data-id="${e.id}">${tds}<td class="act">${mv}<button class="exp" title="Open full editor">⤢</button><button class="del" title="Delete">×</button></td></tr>`;
+  // View-conversation popup — Responses tab only.
+  const vc = state.tab === 'responses' ? `<button class="mv viewconv" title="View conversation">💬</button>` : '';
+  return `<tr data-id="${e.id}">${tds}<td class="act">${mv}${vc}<button class="exp" title="Open full editor">⤢</button><button class="del" title="Delete">×</button></td></tr>`;
 }
 
 function wireGrid() {
@@ -725,6 +771,7 @@ function onGridClick(ev) {
   if (ev.target.closest('.del')) return deleteEntry(e);
   if (ev.target.closest('.close-btn')) return openClosePopup(e);
   if (ev.target.closest('.fail-btn')) return openFailPopup(e);
+  if (ev.target.closest('.viewconv')) return openConvModal(e);
   if (ev.target.closest('.exp')) return openEdit(e);
   if (ev.target.closest('a')) return; // let links through
   const td = ev.target.closest('td.c'); if (!td || td.querySelector('input,select,textarea')) return;
@@ -1152,7 +1199,8 @@ async function deleteEntry(e) {
 }
 
 async function refreshCrm() {
-  if (!state.lookupConfigured) { toast('CRM lookup not configured'); return; }
+  // Prior-conversation data is now sourced from the local merged conversations —
+  // no external CRM / LOOKUP_KEY needed, so no configuration gate here.
   const btn = $('refresh-crm-btn'); btn.disabled = true; const old = btn.textContent;
   let afterId = 0, processed = 0, matched = 0, total = 0, done = false, guard = 0;
   try {
