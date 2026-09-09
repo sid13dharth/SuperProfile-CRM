@@ -370,9 +370,17 @@ function renderSignals(box, res) {
       box.appendChild(sig('red', '🚫',
         `<b>Duplicate username.</b> Already added by <b>${esc(res.dup.owner || res.dup.created_by)}</b>` +
         `<small>on ${esc(fmtDate(res.dup.created_at))}${res.dup.email ? ' · ' + esc(res.dup.email) : ''}</small>`));
-    } else {
+    } else if (!res.email_dup) {
       box.appendChild(sig('green', '✨', `<b>New username.</b> Not in the master sheet or prior entries.`));
     }
+  }
+  // Signal 1b — same email already a lead in our DB (independent of username).
+  if (res.email_dup) {
+    const e = res.email_dup;
+    box.appendChild(sig(e.source === 'master' ? 'blue' : 'red', '📧',
+      `<b>Email already in our database.</b> This lead already exists` +
+      (e.owner || e.created_by ? ` — added by <b>${esc(e.owner || e.created_by)}</b>` : '') + '.' +
+      `<small>${e.handle ? '@' + esc(e.handle) + ' · ' : ''}${e.created_at ? esc(fmtDate(e.created_at)) : ''}${e.source === 'master' ? ' · master sheet' : ''}</small>`));
   }
   // Signal 2 — prior Instantly conversation (via the CRM), independent of #1.
   renderCrmSignal(box, res.crm, res.email);
@@ -429,7 +437,9 @@ async function addLead() {
       msg.className = 'add-msg err';
       msg.textContent = d.source === 'master'
         ? `Already in the master sheet (owner ${d.owner || '—'}). Find @${d.handle || ''} in the list to edit it.`
-        : `Not added — @${d.handle || ''} already added by ${d.owner || d.created_by || 'someone'} on ${fmtDate(d.created_at)}.`;
+        : d.matched_on === 'email'
+          ? `Not added — this email already exists in our database${d.handle ? ` (@${d.handle})` : ''}, added by ${d.owner || d.created_by || 'someone'} on ${fmtDate(d.created_at)}.`
+          : `Not added — @${d.handle || ''} already added by ${d.owner || d.created_by || 'someone'} on ${fmtDate(d.created_at)}.`;
     }
   } catch (e) { msg.className = 'add-msg err'; msg.textContent = e.message; }
   finally { $('add-btn').disabled = false; }

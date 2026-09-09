@@ -927,6 +927,22 @@ async function handleApi(request, env, url) {
       });
     }
 
+    // Duplicate-by-email: the same email is already a lead (possibly under a
+    // different handle). Treat as existing instead of double-storing the person.
+    if (email) {
+      const byEmail = await env.DB.prepare('SELECT * FROM entries WHERE email_norm=? ORDER BY id LIMIT 1').bind(email).first();
+      if (byEmail) {
+        return json({
+          saved: false,
+          duplicate: { handle: byEmail.handle_norm || handle, owner: byEmail.lead_owner, created_by: byEmail.created_by,
+                       created_at: byEmail.created_at, email: byEmail.email, id: byEmail.id,
+                       source: byEmail.source || 'added', matched_on: 'email' },
+          in_master: byEmail.source === 'master',
+          crm: await liveCrm(env, email, handle),
+        });
+      }
+    }
+
     // Prior-conversation snapshot from the CRM (best-effort — never blocks the save).
     const crmResults = await crmLookup(env, email ? [email] : [], [handle]);
     const sig = pickCrmSignal(crmResults);
@@ -1965,13 +1981,26 @@ async function checkLead(env, body) {
       inMaster = existing.source === 'master';
     }
   }
+  // Same email already in our DB (under any handle) — an independent "already a
+  // lead" signal. Without this, a known email under a new/blank handle looked new.
+  let emailDup = null;
+  if (email) {
+    const byEmail = await env.DB.prepare(
+      'SELECT id, handle_norm, lead_owner, created_by, created_at, email, source FROM entries WHERE email_norm=? ORDER BY id LIMIT 1').bind(email).first();
+    if (byEmail && (!dup || byEmail.id !== dup.id)) {
+      emailDup = { id: byEmail.id, handle: byEmail.handle_norm || '', owner: byEmail.lead_owner,
+                   created_by: byEmail.created_by, created_at: byEmail.created_at,
+                   email: byEmail.email, source: byEmail.source || 'added' };
+      if (byEmail.source === 'master') inMaster = true;
+    }
+  }
   const crm = (env.LOOKUP_KEY) ? await liveCrm(env, email, handle) : null;
   const sig = crm ? crm.signal : null;
   return {
     handle, email,
-    dup, in_master: inMaster,
+    dup, email_dup: emailDup, in_master: inMaster,
     crm,
-    verdict: verdictFor({ dup: !!dup, in_master: inMaster }, sig),
+    verdict: verdictFor({ dup: !!(dup || emailDup), in_master: inMaster }, sig),
   };
 }
 
