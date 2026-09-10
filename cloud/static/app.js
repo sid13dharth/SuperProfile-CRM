@@ -409,12 +409,32 @@ function convDateTime(ts) {
   if (!ts) return '';
   try { const d = new Date(ts); return isNaN(d) ? esc(ts) : esc(d.toLocaleString()); } catch (e) { return esc(ts); }
 }
+// Trim the trailing quoted reply-chain ("On <date> … wrote:", ">" lines,
+// original-message headers) — it just repeats the previous message, which is
+// already shown as its own bubble. Falls back to full text if it strips all.
+function convStripQuoted(t) {
+  if (!t) return t;
+  const lines = t.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    const nextTwo = lines.slice(i, i + 3).join(' ');
+    if (/^\s*>/.test(ln)) break;
+    if (/^\s*-{2,}\s*Original Message\s*-{2,}/i.test(ln)) break;
+    if (/^\s*From:\s?.+/i.test(ln) && /\b(Sent|To|Date):/i.test(nextTwo)) break;
+    if (/^\s*On\b.+/i.test(ln) && /(wrote:|<[^\s>]+@[^\s>]+>)/i.test(nextTwo)) break;
+    out.push(ln);
+  }
+  const r = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return r || t.trim();
+}
 function convMsgHtml(m) {
   const them = m.ue_type === 2;                 // 2 = lead reply; 1/3 = our send
   const who = them ? (m.from_email || 'Lead') : 'You';
   let text = (m.body_text || '').trim();
   if (!text && m.body_html) text = m.body_html.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').trim();
   if (!text) text = m.preview || '';
+  text = convStripQuoted(text);
   const body = esc(text) || '<i>(no content)</i>';
   return `<div class="cmsg ${them ? 'them' : 'us'}">`
     + `<div class="cmsg-h"><b>${esc(who)}</b> · ${convDateTime(m.timestamp_email)}${m.campaign_name ? ' · ' + esc(m.campaign_name) : ''}</div>`
