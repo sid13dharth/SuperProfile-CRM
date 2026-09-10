@@ -415,7 +415,7 @@ function convMsgHtml(m) {
   let text = (m.body_text || '').trim();
   if (!text && m.body_html) text = m.body_html.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').trim();
   if (!text) text = m.preview || '';
-  const body = esc(text).replace(/\n/g, '<br>') || '<i>(no content)</i>';
+  const body = esc(text) || '<i>(no content)</i>';
   return `<div class="cmsg ${them ? 'them' : 'us'}">`
     + `<div class="cmsg-h"><b>${esc(who)}</b> · ${convDateTime(m.timestamp_email)}${m.campaign_name ? ' · ' + esc(m.campaign_name) : ''}</div>`
     + `<div class="cmsg-b">${body}</div></div>`;
@@ -435,7 +435,7 @@ async function openConvModal(e) {
   catch (err) { $('conv-body').innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
   const en = d.entry || e, dl = en.deal || {};
   const det = [];
-  const row = (k, v) => { if (v) det.push(`<div><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`); };
+  const row = (k, v) => { if (v) det.push(`<span class="cd"><span class="k">${esc(k)}</span> <span class="v">${v}</span></span>`); };
   row('Email', en.email ? esc(en.email) : '');
   row('Handle', en.handle ? `<a href="${esc(en.social_url || ('https://instagram.com/' + en.handle))}" target="_blank" rel="noopener">@${esc(en.handle)}</a>` : '');
   row('Stage', [en.stage, en.position].filter(Boolean).map(esc).join(' › '));
@@ -453,9 +453,11 @@ async function openConvModal(e) {
   const vids = sec('Videos', d.videos, v => `<div>${v.url ? `<a href="${esc(v.url)}" target="_blank" rel="noopener">${esc((v.url || '').replace(/^https?:\/\//, '').slice(0, 55))}</a>` : esc(v.lead_name || '—')}${v.budget ? ' · ' + esc(v.budget) : ''}${v.date_posted ? ' · ' + esc(fmtDate(v.date_posted)) : ''}</div>`);
   const notes = sec('Notes', d.notes, n => `<div><b>${esc(n.author || '')}</b> <span class="muted">${esc(fmtDate(n.created_at))}</span><br>${esc(n.text || '').replace(/\n/g, '<br>')}</div>`);
   const act = sec('Activity', d.activity, a => `<div class="muted small">${esc(fmtDate(a.created_at))} · ${esc(a.author || '')} · ${esc(a.kind || '')}${a.detail ? ': ' + esc(a.detail) : ''}</div>`);
+  const extras = [vids, notes, act].filter(Boolean).join('');
   $('conv-body').innerHTML =
-    `<div class="conv-cols"><div class="conv-detail"><h4>Lead details</h4>${det.join('') || '<div class="muted">—</div>'}${vids}${notes}${act}</div>`
-    + `<div class="conv-thread"><h4>Conversation (${emails.length})</h4>${thread}</div></div>`;
+    `<div class="conv-top">${det.join('') || '<span class="muted">—</span>'}</div>`
+    + (extras ? `<div class="conv-extras">${extras}</div>` : '')
+    + `<div class="conv-thread full"><div class="conv-thread-h">Conversation (${emails.length})</div>${thread}</div>`;
 }
 
 function sig(tone, ic, html) {

@@ -411,23 +411,25 @@ td.act .close-btn:hover, td.act .fail-btn:hover { opacity: 1; filter: brightness
 .toast.show { opacity: 1; }
 
 /* ── read-only conversation popup (Responses tab) ─────────────── */
-.conv-modal { max-width: 1000px; width: 94vw; }
+.conv-modal { max-width: 760px; width: 94vw; }
 .conv-hd { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .conv-hd h3 { margin: 0; }
-.conv-cols { display: flex; gap: 16px; max-height: 72vh; }
-.conv-detail { flex: 0 0 300px; overflow: auto; font-size: 13px; border-right: 1px solid var(--border); padding-right: 12px; }
-.conv-detail > div { margin-bottom: 5px; }
-.conv-detail .k { color: var(--muted); display: inline-block; min-width: 92px; vertical-align: top; }
-.conv-detail .v { display: inline-block; max-width: 190px; word-break: break-word; }
-.conv-thread { flex: 1; overflow: auto; padding-right: 4px; }
-.conv-detail h4, .conv-thread h4 { margin: 0 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
-.conv-sec { margin-top: 16px; }
-.conv-sec > div { margin-bottom: 6px; font-size: 12px; }
-.cmsg { border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 8px 11px; margin-bottom: 8px; }
+#conv-body { display: flex; flex-direction: column; max-height: 78vh; }
+/* details bar across the top */
+.conv-top { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.conv-top .cd .k { color: var(--muted); margin-right: 4px; }
+.conv-top .cd .v { word-break: break-word; }
+.conv-extras { display: flex; flex-wrap: wrap; gap: 8px 22px; max-height: 110px; overflow: auto; font-size: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.conv-extras .conv-sec { flex: 1; min-width: 200px; margin: 0; }
+.conv-extras .conv-sec > div { margin-bottom: 4px; }
+.conv-sec h4 { margin: 0 0 5px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+/* conversation fills the rest, chat-style */
+.conv-thread.full { flex: 1; overflow: auto; padding-top: 12px; }
+.conv-thread-h { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 10px; }
+.cmsg { border: 1px solid var(--border); border-radius: var(--radius, 10px); padding: 9px 12px; margin-bottom: 10px; max-width: 82%; }
 .cmsg.them { background: var(--bg2); }
-.cmsg.us { background: var(--bg3); }
+.cmsg.us { background: var(--bg3); margin-left: auto; }
 .cmsg-h { font-size: 12px; color: var(--muted); margin-bottom: 5px; }
-.cmsg-b { font-size: 13px; line-height: 1.5; word-break: break-word; }
-.conv-detail .small, .conv-sec .small { font-size: 11px; }
+.cmsg-b { font-size: 13px; line-height: 1.55; word-break: break-word; white-space: pre-wrap; }
 #conv-body .muted { color: var(--muted); }
 #conv-body .small { font-size: 11px; }
