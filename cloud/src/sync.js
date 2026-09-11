@@ -364,8 +364,9 @@ async function runEnrich(env, ws, apiKey, maxEmails = 40) {
       stmts.push(env.DB.prepare('INSERT INTO activity (lead_key, author, kind, detail, created_at) VALUES (?,?,?,?,?)').bind(key, 'Auto', 'poc_change', `set from Instantly Lead Owner: ${poc}`, now));
     }
   }
-  await env.DB.batch(stmts);
-  await bumpVersion(env);
+  // Nothing to write → nothing changed → do NOT bump the version. A bump wakes
+  // every open browser and makes it rebuild the whole grid.
+  if (stmts.length) { await env.DB.batch(stmts); await bumpVersion(env); }
   // Newly-enriched rows now have social/handle → link them to people.
   await linkConversations(env, leadRows.map(r => r.key));
   return emails.length;
@@ -387,13 +388,16 @@ async function runLabelBackfill(env, ws, apiKey, maxEmails = 60) {
   const labelByEmail = {};
   for (const item of items) { const em = (item.email || '').toLowerCase(); const label = INSTANTLY_LABEL_MAP[String(item.lt_interest_status)] || ''; if (label && !labelByEmail[em]) labelByEmail[em] = label; }
   const stmts = [];
+  let labelled = 0;
   for (const em of emails) {
     const label = labelByEmail[em.toLowerCase()];
-    if (label) stmts.push(env.DB.prepare("UPDATE conversations SET label=?, label_checked=1 WHERE ws=? AND email=? AND label=''").bind(label, ws, em));
+    if (label) { stmts.push(env.DB.prepare("UPDATE conversations SET label=?, label_checked=1 WHERE ws=? AND email=? AND label=''").bind(label, ws, em)); labelled++; }
     stmts.push(env.DB.prepare('UPDATE conversations SET label_checked=1 WHERE ws=? AND email=?').bind(ws, em));
   }
-  await env.DB.batch(stmts);
-  await bumpVersion(env);
+  if (stmts.length) await env.DB.batch(stmts);
+  // label_checked is pure bookkeeping the grid never displays — bumping the
+  // version for it would wake every open browser for no visible change.
+  if (labelled) await bumpVersion(env);
   return emails.length;
 }
 
@@ -650,7 +654,7 @@ async function fetchLeadEmails(env, apiKey, email) {
 async function runReplyReconcile(env, ws, apiKey, batch = 150) {
   const cursor = parseInt(await metaGet(env, `reconcile_cursor:${ws}`, '0'), 10) || 0;
   const { results: convs } = await env.DB.prepare(
-    'SELECT rowid AS rid, key, email, campaign_id, lead_reply_count FROM conversations WHERE ws=? AND rowid > ? ORDER BY rowid LIMIT ?')
+    'SELECT rowid AS rid, key, email, campaign_id, lead_reply_count, last_lead_msg_at FROM conversations WHERE ws=? AND rowid > ? ORDER BY rowid LIMIT ?')
     .bind(ws, cursor, batch).all();
   if (!convs.length) { await metaSetStmt(env, `reconcile_cursor:${ws}`, '0').run(); return { checked: 0, fixed: 0, wrapped: true }; }
   // Instantly's reply count per (campaign|email) for this batch's leads.
@@ -673,8 +677,40 @@ async function runReplyReconcile(env, ws, apiKey, batch = 150) {
   }
   // Leads where Instantly reports MORE replies than we stored → re-fetch thread.
   const behind = convs.filter(c => (countByKey.get(`${c.campaign_id}|${(c.email || '').toLowerCase()}`) || 0) > (c.lead_reply_count || 0));
+
+  /* A matching reply COUNT is not proof we hold the messages. This check only
+     ever compared counts, so a conversation that says "1 reply" while we hold
+     ZERO email rows for it looked healthy forever — and its conversation popup
+     stayed permanently empty. That is exactly what happens to threads whose
+     reply was learned from Instantly's per-lead counts (which is how a
+     conversation row gets created) while the bodies were never ingested,
+     e.g. anything older than the one-time historical backfill actually pulled.
+     So: also re-fetch any conversation that claims replies but has no stored
+     mail at all. */
+  /* Bounded to recent threads on purpose. Instantly stops serving old mail —
+     probed live: every gap from Aug 2025 returns 0 emails there, while 3 of 4
+     from Jul 2026 come back in full. Without this window the unrecoverable
+     ones would be re-fetched on every reconcile cycle forever (~38 leads every
+     ~37 min = ~1.5k wasted Instantly calls a day) and never improve. */
+  const REPAIR_WINDOW_DAYS = 180;
+  const repairCutoff = new Date(Date.now() - REPAIR_WINDOW_DAYS * 86400000).toISOString();
+  const withReplies = convs.filter(c => (c.lead_reply_count || 0) > 0 && c.email
+    && (c.last_lead_msg_at || '') >= repairCutoff);
+  const haveMail = new Set();
+  for (let i = 0; i < withReplies.length; i += 90) {          // D1 caps bound params ~100
+    const chunk = withReplies.slice(i, i + 90).map(c => c.email.toLowerCase());
+    const ph = chunk.map(() => '?').join(',');
+    const { results } = await env.DB.prepare(
+      `SELECT DISTINCT lead_email FROM emails WHERE lead_email IN (${ph})`).bind(...chunk).all();
+    for (const r of results) haveMail.add((r.lead_email || '').toLowerCase());
+  }
+  const bodiless = withReplies.filter(c => !haveMail.has(c.email.toLowerCase()));
+
+  // Union, de-duplicated by conversation key.
+  const seen = new Set();
+  const toFetch = [...behind, ...bodiless].filter(c => !seen.has(c.key) && seen.add(c.key));
   const fixedKeys = [];
-  for (const c of behind) {
+  for (const c of toFetch) {
     try {
       const mails = await fetchLeadEmails(env, apiKey, c.email);
       const ups = mails.filter(e => e.id).map(e => emailUpsertStmt(env, e, ws));
@@ -685,7 +721,7 @@ async function runReplyReconcile(env, ws, apiKey, batch = 150) {
   if (fixedKeys.length) { await recomputeConversations(env, fixedKeys); await bumpVersion(env); }
   const nextCursor = convs[convs.length - 1].rid;
   await metaSetStmt(env, `reconcile_cursor:${ws}`, String(nextCursor)).run();
-  return { checked: convs.length, behind: behind.length, fixed: fixedKeys.length, next: nextCursor };
+  return { checked: convs.length, behind: behind.length, bodiless: bodiless.length, fixed: fixedKeys.length, next: nextCursor };
 }
 
 /* ── top-level ticks ── */

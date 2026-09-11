@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "SuperProfile CRM — Instagram lookup",
+  "version": "1.0.0",
+  "description": "Shows whether the Instagram profile you are viewing is a lead in the SuperProfile CRM, and what stage they are at.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://superprofile-leadgen.superprofile-crm.workers.dev/*"],
+  "background": { "service_worker": "background.js" },
+  "options_page": "options.html",
+  "action": { "default_title": "SuperProfile CRM lookup", "default_popup": "options.html" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.instagram.com/*", "https://instagram.com/*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

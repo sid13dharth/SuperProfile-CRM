@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SuperProfile CRM lookup — settings</title>
+<style>
+  body { font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #14161a; color: #e8eaed; margin: 0; padding: 16px; width: 330px; }
+  h1 { font-size: 14px; margin: 0 0 4px; }
+  p.hint { color: #9aa3ae; font-size: 11.5px; margin: 0 0 14px; }
+  label { display: block; font-size: 11.5px; color: #9aa3ae; margin: 10px 0 4px; }
+  input { width: 100%; box-sizing: border-box; padding: 7px 9px; border-radius: 7px;
+          border: 1px solid #2b3038; background: #0f1114; color: #e8eaed; font: inherit; }
+  input:focus { border-color: #7ab8ff; outline: none; }
+  button { margin-top: 14px; width: 100%; padding: 8px; border: 0; border-radius: 7px;
+           background: #2f6fe4; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button:hover { filter: brightness(1.08); }
+  #msg { margin-top: 10px; font-size: 12px; min-height: 17px; }
+  .ok { color: #6ee7a0; } .err { color: #ff9aa8; }
+</style>
+
+<h1>SuperProfile CRM lookup</h1>
+<p class="hint">Paste the team key once. It is stored in Chrome sync storage and sent only to the CRM worker below.</p>
+
+<label for="base">CRM worker URL</label>
+<input id="base" placeholder="https://superprofile-leadgen.superprofile-crm.workers.dev">
+
+<label for="key">Team key</label>
+<input id="key" type="password" placeholder="x-ext-key">
+
+<button id="save">Save &amp; test</button>
+<div id="msg"></div>
+
+<script src="options.js"></script>

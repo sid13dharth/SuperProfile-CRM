@@ -61,13 +61,24 @@ CREATE TABLE IF NOT EXISTS entries (
     crm_campaigns       TEXT NOT NULL DEFAULT '',   -- JSON array string
     crm_last_contact_at TEXT NOT NULL DEFAULT '',
     crm_last_reply_at   TEXT NOT NULL DEFAULT '',
-    crm_checked_at      TEXT NOT NULL DEFAULT ''
+    crm_checked_at      TEXT NOT NULL DEFAULT '',
+
+    -- Instagram profile stats (HikerAPI, migrate_v10). Nullable numerics so
+    -- "never fetched" stays distinguishable from a real 0.
+    ig_user_id      TEXT NOT NULL DEFAULT '',
+    ig_followers    INTEGER,
+    ig_last_post_at TEXT NOT NULL DEFAULT '',
+    ig_avg_views_10 INTEGER,
+    ig_reels_used   INTEGER,
+    ig_checked_at   TEXT NOT NULL DEFAULT '',
+    ig_status       TEXT NOT NULL DEFAULT ''   -- ''|ok|private|notfound|error
 );
 CREATE INDEX IF NOT EXISTS idx_entries_email    ON entries (email_norm);
 CREATE INDEX IF NOT EXISTS idx_entries_created  ON entries (created_at);
 CREATE INDEX IF NOT EXISTS idx_entries_source   ON entries (source);
 CREATE INDEX IF NOT EXISTS idx_entries_stage    ON entries (stage);
 CREATE INDEX IF NOT EXISTS idx_entries_position ON entries (position);
+CREATE INDEX IF NOT EXISTS idx_entries_ig_checked ON entries (ig_checked_at);
 
 /* ── pipeline classification tree (Stage → Status → Label → sub-labels) ──
    A flat, editable tree. `key` encodes the path from the stage; `parent` is the

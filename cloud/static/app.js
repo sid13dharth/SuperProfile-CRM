@@ -47,6 +47,12 @@ function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTi
 
 /* ── state ─────────────────────────────────────────────────── */
 const state = { me: null, crmUrl: '', lookupConfigured: false, entries: [], videos: [], version: -1, categories: [], team: [], stats: null, tab: 'leads',
+  // Virtualised grid bookkeeping (see renderEntries).
+  grid: { colW: null, rowH: 26, sig: '', tbody: null, win: null, cols: null, head: '', note: '' },
+  page: 1, pageSize: 100, lastQs: null,
+  // Grid sort. key '' = the server's default order (data-rich first, newest first).
+  sort: { key: '', dir: 'desc' },
+  linkDomains: [],
   pipeline: { stages: ['Leads', 'Responses', 'Closed', 'Failed'], nodes: [], byKey: {}, children: {} } };
 
 /* ── auth / boot ───────────────────────────────────────────── */
@@ -100,7 +106,7 @@ function showApp() {
   if (state.me.is_admin) $('team-btn').style.display = '';
   loadCategories();
   loadTeam();
-  loadPipeline().then(() => switchTab('leads'));
+  loadPipeline().then(() => (deepLink ? runDeepLink() : switchTab('leads')));
   injectCountries();
   startPolling();
   // Warm the Unibox iframe in the background (hidden) so it's already booted
@@ -468,6 +474,26 @@ async function openConvModal(e) {
   row('Deliverables', dl.deliverables ? esc(dl.deliverables) : '');
   row('Notes', en.notes ? esc(en.notes).replace(/\n/g, '<br>') : '');
   const emails = d.emails || [];
+  /* A lead can sit in Responses because Instantly counted a reply while we hold
+     none of that thread's messages — the bodies were never ingested, and for old
+     threads Instantly no longer serves them at all. Without this the popup showed
+     only our outbound mail and looked broken. Say what is actually going on. */
+  const convs = d.conversations || [];
+  const claimed = convs.reduce((t, c) => t + (c.lead_reply_count || 0), 0);
+  const held = emails.filter(m => Number(m.ue_type) === 2).length;
+  let gap = '';
+  if (claimed > held) {
+    const missing = claimed - held;
+    const otherAddr = convs
+      .filter(c => (c.lead_reply_count || 0) > 0 && c.email && c.email.toLowerCase() !== String(en.email || '').toLowerCase())
+      .map(c => c.email);
+    const when = convs.map(c => c.last_lead_msg_at).filter(Boolean).sort().pop();
+    gap = '<div class="conv-gap">⚠️ <b>' + missing + ' repl' + (missing === 1 ? 'y' : 'ies')
+      + ' on record' + (when ? ' (last ' + esc(fmtDate(when)) + ')' : '')
+      + ', but the message text is not stored.</b>'
+      + (otherAddr.length ? '<br>The reply came from <b>' + esc(otherAddr.join(', ')) + '</b>, a different address to the one on this lead.' : '')
+      + '<br><span class="muted">Instantly no longer returns that thread, so it cannot be re-fetched. The lead is correctly in Responses.</span></div>';
+  }
   const thread = emails.length ? emails.slice().reverse().map(convMsgHtml).join('') : '<div class="empty">No emails on record for this lead.</div>';
   const sec = (title, items, fn) => items && items.length ? `<div class="conv-sec"><h4>${esc(title)} (${items.length})</h4>${items.map(fn).join('')}</div>` : '';
   const vids = sec('Videos', d.videos, v => `<div>${v.url ? `<a href="${esc(v.url)}" target="_blank" rel="noopener">${esc((v.url || '').replace(/^https?:\/\//, '').slice(0, 55))}</a>` : esc(v.lead_name || '—')}${v.budget ? ' · ' + esc(v.budget) : ''}${v.date_posted ? ' · ' + esc(fmtDate(v.date_posted)) : ''}</div>`);
@@ -477,7 +503,7 @@ async function openConvModal(e) {
   $('conv-body').innerHTML =
     `<div class="conv-top">${det.join('') || '<span class="muted">—</span>'}</div>`
     + (extras ? `<div class="conv-extras">${extras}</div>` : '')
-    + `<div class="conv-thread full"><div class="conv-thread-h">Conversation (${emails.length})</div>${thread}</div>`;
+    + `<div class="conv-thread full"><div class="conv-thread-h">Conversation (${emails.length})</div>${gap}${thread}</div>`;
 }
 
 function sig(tone, ic, html) {
@@ -516,6 +542,7 @@ function filterParams() {
   const p = new URLSearchParams();
   const q = $('search').value.trim(); if (q) p.set('q', q);
   const of = $('owner-filter').value; if (of) p.set('owner', of);
+  const lf = $('link-filter') ? $('link-filter').value : ''; if (lf) p.set('link_domain', lf);
   const cf = $('cat-filter').value; if (cf) p.set('category', cf);
   const stt = $('status-filter') ? $('status-filter').value : ''; if (stt) p.set('status', stt);
   const lbl = $('label-filter') ? $('label-filter').value : ''; if (lbl) p.set('label', lbl);
@@ -532,16 +559,29 @@ function filterParams() {
 async function loadEntries() {
   if (state.tab === 'videos') return loadVideos();
   let data;
-  try { data = await api('/api/entries?' + filterParams().toString()); }
+  // limit=100000 pulls the FULL filtered set into the grid (the server caps at
+  // 100k; the table has ~22k rows). The user opted to load everything on-screen.
+  const qs = filterParams(); qs.set('limit', '100000');
+  // A changed filter / tab / search is a new result set, so jump back to page 1.
+  // The 12s background refresh sends the SAME query, so it keeps your page.
+  const qsKey = qs.toString();
+  if (state.lastQs !== null && qsKey !== state.lastQs) state.page = 1;
+  state.lastQs = qsKey;
+  try { data = await api('/api/entries?' + qs.toString()); }
   catch (e) { $('list').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   state.entries = data.entries; state.version = data.version;
   state.owners = data.owners || [];
   state.statuses = data.statuses || [];
   state.labels = data.labels || [];
   state.grandTotal = data.grand_total;
+  // Exact count matching the current filter (falls back to grand total if the
+  // server is on an older build that doesn't send it).
+  state.filteredTotal = data.filtered_total != null ? data.filtered_total : data.grand_total;
+  applySort();
   renderEntries();
   refreshOwnerFilter();
   refreshClassifyFilters();
+  refreshLinkFilter();
   loadStats();
 }
 
@@ -626,6 +666,21 @@ async function loadStats() {
   } catch (e) { $('date-summary').textContent = ''; }
 }
 
+// The link-in-bio dropdown lists the platforms actually present in the data,
+// with counts, so you pick rather than guess at spellings.
+async function refreshLinkFilter() {
+  const sel = $('link-filter'); if (!sel) return;
+  let d;
+  try { d = await api('/api/entries/ig-domains'); } catch { return; }
+  state.linkDomains = d.domains || [];
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Any link in bio</option>'
+    + (d.with_link ? `<option value="__any__">— Has a link (${d.with_link.toLocaleString()}) —</option>` : '')
+    + (d.without_link ? `<option value="__none__">— No link (${d.without_link.toLocaleString()}) —</option>` : '')
+    + state.linkDomains.map(x => `<option value="${esc(x.domain)}">${esc(x.domain)} (${x.n.toLocaleString()})</option>`).join('');
+  sel.value = cur;
+}
+
 function refreshOwnerFilter() {
   const sel = $('owner-filter');
   const cur = sel.value;
@@ -656,6 +711,9 @@ function statusLabel(key) {
 const SELECT_OPTS = {
   category: () => state.categories,
   owner: () => ownerOptions(),
+  // Owner can be anyone (contractors, agencies, ex-teammates). Manager is the
+  // accountable person INSIDE the CRM, so it only ever offers actual users.
+  manager: () => (state.team || []).slice().sort((a, b) => a.localeCompare(b)),
   stage: () => state.pipeline.stages,
   label: () => state.labels || [],
   video_type: () => VIDEO_TYPES,
@@ -677,12 +735,21 @@ const CORE_COLS = [
   { h: 'Primary Social Profile', link: true, cls: 'lnk' },
   { f: 'email',      h: 'Email',      e: 'text' },
   { f: 'lead_owner', h: 'Lead Owner', e: 'owner' },
+  // Manager is a CRM teammate; owner often is not one, so the two are separate.
+  { f: 'lead_manager', h: 'Lead Manager', e: 'manager' },
   { f: 'category',   h: 'Category',   e: 'category', cls: 'cat' },
   { f: 'stage',      h: 'Stage',      e: 'stage', cls: 'stg' },
   { f: 'status',     h: 'Status',     e: 'status', cls: 'stt' },
   { f: 'label',      h: 'Label',      e: 'label', cls: 'lbl' },
   { f: 'notes',      h: 'Notes',      e: 'notes', cls: 'notes' },
   { h: 'CRM',        status: true, cls: 'st' },
+  // Instagram, filled from HikerAPI. Not editable — they are fetched values,
+  // so there is no `e:` and the grid renders them read-only.
+  { f: 'ig_followers',    h: 'Followers',        ig: 'num',  cls: 'ig', sortable: true },
+  { f: 'ig_last_post_at', h: 'Last Post',        ig: 'date', cls: 'ig igdate' },
+  { f: 'ig_avg_views_10', h: 'Avg Views (10)',   ig: 'num',  cls: 'ig', sortable: true },
+  { f: 'ig_bio',          h: 'Bio',              ig: 'text', cls: 'igbio' },
+  { f: 'ig_link',         h: 'Link in bio',      ig: 'link', cls: 'iglink' },
 ];
 // Extra columns per tab (appended to CORE).
 const TAB_EXTRA = {
@@ -724,6 +791,49 @@ function cellValue(e, c) {
   if (c.deal) return (e.deal && e.deal[c.f]) || '';
   return c.f && e[c.f] != null ? e[c.f] : '';
 }
+// Compact counts: 12,300 -> 12.3K. Keeps the columns narrow without hiding
+// the real number, which stays in the title attribute.
+function fmtCount(n) {
+  if (n === null || n === undefined) return '';
+  if (n < 1000) return String(n);
+  if (n < 1e6) return (n / 1e3).toFixed(n < 10000 ? 1 : 0).replace(/\.0$/, '') + 'K';
+  return (n / 1e6).toFixed(n < 1e7 ? 1 : 0).replace(/\.0$/, '') + 'M';
+}
+
+// A never-fetched value is a dash, NOT a zero — the difference matters when
+// you are judging a lead. A checked-but-empty value says why.
+function igCell(e, c) {
+  const v = e[c.f];
+  if (v === null || v === undefined || v === '') {
+    if (!e.ig_checked_at) return '<span class="ph" title="Not fetched yet">—</span>';
+    const why = e.ig_status === 'private' ? 'Private account'
+      : e.ig_status === 'notfound' ? 'Handle not found on Instagram'
+      : e.ig_status === 'error' ? 'Fetch failed — try refreshing'
+      : c.f === 'ig_avg_views_10' ? 'No reels found'
+      : 'No data';
+    return '<span class="ph" title="' + esc(why) + '">—</span>';
+  }
+  if (c.ig === 'text') {
+    // One line + ellipsis like every other column; the full bio is the tooltip.
+    return '<span class="igv" title="' + esc(v) + '">' + esc(v) + '</span>';
+  }
+  if (c.ig === 'link') {
+    // Show it without the scheme so the platform reads first; the anchor keeps
+    // the real URL. Not opened from the grid by accident — needs a click.
+    const shown = String(v).replace(/^https?:\/\//i, '').replace(/^www\./i, '');
+    return '<a class="igv iglink-a" href="' + esc(v) + '" target="_blank" rel="noopener" title="' + esc(v) + '">' + esc(shown) + '</a>';
+  }
+  if (c.ig === 'date') {
+    const d = new Date(v); if (isNaN(d)) return ph;
+    const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+    const label = fmtDMY(d.toISOString().slice(0, 10));
+    // Flag leads who have gone quiet — that is the point of the column.
+    const cls = days > 90 ? ' stale' : '';
+    return '<span class="igv' + cls + '" title="' + esc(days + ' days ago') + '">' + esc(label) + '</span>';
+  }
+  return '<span class="igv" title="' + esc(Number(v).toLocaleString()) + '">' + esc(fmtCount(Number(v))) + '</span>';
+}
+
 function cellDisplay(e, c) {
   if (c.link) return e.social_url ? `<a href="${esc(e.social_url)}" target="_blank" rel="noopener">${esc(e.social_url.replace(/^https?:\/\//, ''))}</a>` : ph;
   if (c.status) return statusChipHtml(e);
@@ -731,6 +841,7 @@ function cellDisplay(e, c) {
   if (c.f === 'label') return e.label ? `<span class="crumb">${esc(e.label)}</span>` : '<span class="ph">— set —</span>';
   if (c.e === 'delivery' || c.e === 'reason') { const l = subNodeLabel(e.position); return l ? `<span class="crumb">${esc(l)}</span>` : '<span class="ph">— set —</span>'; }
   if (c.uname) return '@' + esc(e.handle);
+  if (c.ig) return igCell(e, c);
   if (c.f === 'date') { const d = fmtDay(e.created_at); return d ? esc(d) : ph; }
   if (c.e === 'date') { const v = cellValue(e, c); return v ? esc(fmtDMY(v)) : ph; }
   return cellTxt(cellValue(e, c));
@@ -740,21 +851,242 @@ function ownerOptions() {
   return [...new Set([...(state.owners || []), ...(state.team || [])])].filter(Boolean).sort((a, b) => a.localeCompare(b));
 }
 
+/* ── paged grid ─────────────────────────────────────
+   The grid can match ~22k leads x 20 columns; rendering them all was ~568k
+   DOM nodes and 5-11s of blocking layout, which is what made scrolling
+   stutter. We now render one page at a time (100 rows by default).
+   Column widths are still measured once from a sample spread across the WHOLE
+   filtered set and pinned via <colgroup> + table-layout:fixed — otherwise
+   every page would size its columns to its own content and they would jump
+   around as you paged.                                                     */
+const PAGE_SIZES = [100, 250, 500, 1000];
+
+function pageCount() {
+  return Math.max(1, Math.ceil(state.entries.length / state.pageSize));
+}
+
+// Page numbers to show: always first and last, a run around the current page,
+// and '…' for the gaps.
+function pageNumbers(cur, total) {
+  if (total <= 9) return Array.from({ length: total }, (_, i) => i + 1);
+  const out = [1];
+  let lo = Math.max(2, cur - 2), hi = Math.min(total - 1, cur + 2);
+  if (cur <= 4) { lo = 2; hi = 6; }
+  if (cur >= total - 3) { lo = total - 5; hi = total - 1; }
+  if (lo > 2) out.push('...');
+  for (let i = lo; i <= hi; i++) out.push(i);
+  if (hi < total - 1) out.push('...');
+  out.push(total);
+  return out;
+}
+
+// Sample rows from across the whole set, lay them out with the normal
+// auto-sizing table, and read back the column widths + row height.
+function measureGrid(list, cols, head) {
+  const n = state.entries.length;
+  const step = Math.max(1, Math.floor(n / 300));
+  let sample = '';
+  for (let i = 0; i < n; i += step) sample += rowHtml(state.entries[i], cols, i);
+  // Measure against content width ONLY. The live rule is width:max-content +
+  // min-width:100%, and that stretch dumps all the surplus into one column —
+  // pinning those widths would give a 1600px Date column.
+  list.innerHTML = `<table class="grid" style="width:max-content;min-width:0">${head}<tbody>${sample}</tbody></table>`;
+  const tbl = list.querySelector('table');
+  const w = [...tbl.querySelectorAll('thead th')].map(th => Math.max(1, Math.ceil(th.getBoundingClientRect().width)));
+  const tr = tbl.querySelector('tbody tr');
+  const rowH = tr ? tr.getBoundingClientRect().height : 0;
+  return { w, rowH: rowH || 26 };
+}
+
+// (Re)build the table shell: colgroup + header + an empty tbody we then fill
+// with the current page.
+function buildGridShell(list, g) {
+  const colg = '<colgroup>' + g.colW.map(w => `<col style="width:${w}px">`).join('') + '</colgroup>';
+  const width = g.colW.reduce((a, b) => a + b, 0);
+  list.innerHTML = g.note + `<table class="grid gfixed" style="width:${width}px">${colg}${g.head}<tbody></tbody></table>`;
+  list.scrollTop = 0; list.scrollLeft = 0;
+  g.tbody = list.querySelector('tbody');
+  g.win = null;
+  wireGrid();
+  const thead = list.querySelector('thead');
+  if (thead && !thead._sortWired) {
+    thead._sortWired = true;
+    thead.addEventListener('click', ev => {
+      const th = ev.target.closest('th[data-sort]');
+      if (th) toggleSort(th.dataset.sort);
+    });
+  }
+}
+
+// Render the current page into the existing tbody.
+function paintPage() {
+  const g = state.grid; if (!g.tbody) return;
+  const from = (state.page - 1) * state.pageSize;
+  const rows = state.entries.slice(from, from + state.pageSize);
+  let body = '';
+  for (let i = 0; i < rows.length; i++) body += rowHtml(rows[i], g.cols, i);
+  if (body === g.win) return;                              // nothing changed — leave the DOM alone
+  const open = $('list').querySelector('.celled');         // an inline editor commits on blur
+  if (open) { open.blur(); return; }                       // that commit repaints; don't fight it
+  g.win = body;
+  g.tbody.innerHTML = body;
+}
+
+function renderPager() {
+  const bar = $('pager');
+  const n = state.entries.length;
+  if (!n) { bar.style.display = 'none'; return; }
+  const total = pageCount(), cur = state.page;
+  const from = (cur - 1) * state.pageSize;
+  const to = Math.min(n, from + state.pageSize);
+  const btn = (act, label, dis, extra) =>
+    `<button class="pg-btn${extra || ''}" data-pg="${act}"${dis ? ' disabled' : ''}>${label}</button>`;
+  let nums = '';
+  for (const x of pageNumbers(cur, total)) {
+    nums += x === '...'
+      ? '<span class="pg-gap">…</span>'
+      : btn(String(x), String(x), false, x === cur ? ' cur' : '');
+  }
+  bar.innerHTML =
+    `<div class="pg-info">Showing <b>${(from + 1).toLocaleString()}</b>–<b>${to.toLocaleString()}</b> of <b>${n.toLocaleString()}</b></div>` +
+    '<div class="pg-nav">' +
+      btn('first', '« First', cur === 1) + btn('prev', '‹ Prev', cur === 1) +
+      nums +
+      btn('next', 'Next ›', cur === total) + btn('last', 'Last »', cur === total) +
+    '</div>' +
+    `<div class="pg-tools"><span>Go to</span><input id="pg-jump" type="number" min="1" max="${total}" placeholder="${cur}"><span>of ${total.toLocaleString()}</span>` +
+    `<select id="pg-size">${PAGE_SIZES.map(v => `<option value="${v}"${v === state.pageSize ? " selected" : ""}>${v} / page</option>`).join('')}</select></div>`;
+  bar.style.display = 'flex';
+}
+
+function goToPage(n) {
+  const total = pageCount();
+  const next = Math.min(total, Math.max(1, n | 0));
+  if (next === state.page) return;
+  state.page = next;
+  paintPage();
+  renderPager();
+  $('list').scrollTop = 0;   // a new page always starts at the top
+}
+
+function wirePager() {
+  const bar = $('pager');
+  if (bar._wired) return;
+  bar._wired = true;
+  bar.addEventListener('click', ev => {
+    const b = ev.target.closest('button[data-pg]'); if (!b || b.disabled) return;
+    const a = b.dataset.pg;
+    if (a === 'first') return goToPage(1);
+    if (a === 'prev') return goToPage(state.page - 1);
+    if (a === 'next') return goToPage(state.page + 1);
+    if (a === 'last') return goToPage(pageCount());
+    goToPage(parseInt(a, 10));
+  });
+  bar.addEventListener('change', ev => {
+    if (ev.target.id !== 'pg-size') return;
+    const size = parseInt(ev.target.value, 10) || 100;
+    // Keep the first visible row visible when the page size changes.
+    const anchor = (state.page - 1) * state.pageSize;
+    state.pageSize = size;
+    state.page = Math.floor(anchor / size) + 1;
+    state.grid.win = null;
+    paintPage(); renderPager(); $('list').scrollTop = 0;
+  });
+  const jump = ev => {
+    if (ev.target.id !== 'pg-jump') return;
+    if (ev.type === 'keydown' && ev.key !== 'Enter') return;
+    const v = parseInt(ev.target.value, 10);
+    if (v) { goToPage(v); ev.target.value = ''; }
+  };
+  bar.addEventListener('keydown', jump);
+  bar.addEventListener('change', jump);
+  // ←/→ page through the grid, but never while typing or editing a cell.
+  document.addEventListener('keydown', ev => {
+    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+    if (state.tab === 'videos' || $('pager').style.display === 'none') return;
+    const t = ev.target;
+    if (t instanceof Element && (t.matches('input, select, textarea') || t.isContentEditable)) return;
+    if (document.querySelector('.modal-bg.open')) return;
+    ev.preventDefault();
+    goToPage(state.page + (ev.key === 'ArrowRight' ? 1 : -1));
+  });
+}
+
+/* Sorts the WHOLE filtered set, not just the visible page, so page 1 really is
+   the top of the list. Leads with no value sink to the bottom in both
+   directions — an un-enriched lead is not "0 followers". */
+function applySort() {
+  const key = state.sort.key;
+  if (!key) return;
+  const mul = state.sort.dir === 'asc' ? 1 : -1;
+  const blank = x => x === null || x === undefined || x === '';
+  state.entries.sort((a, b) => {
+    const av = a[key], bv = b[key];
+    if (blank(av) && blank(bv)) return 0;
+    if (blank(av)) return 1;
+    if (blank(bv)) return -1;
+    if (av === bv) return 0;
+    return av > bv ? mul : -mul;
+  });
+}
+
+function toggleSort(key) {
+  if (state.sort.key === key) {
+    // desc -> asc -> off, so a third click restores the default order.
+    if (state.sort.dir === 'desc') state.sort.dir = 'asc';
+    else { state.sort.key = ''; state.sort.dir = 'desc'; }
+  } else { state.sort.key = key; state.sort.dir = 'desc'; }
+  if (!state.sort.key) return loadEntries();      // refetch to restore server order
+  applySort();
+  state.page = 1;                                  // a new order means a new page 1
+  state.grid.win = null;
+  paintPage(); renderPager(); markSortHeaders();
+  $('list').scrollTop = 0;
+}
+
+// Toggle the header classes in place — rebuilding the shell would re-measure
+// every column width and make them twitch on each sort click.
+function markSortHeaders() {
+  const ths = $('list').querySelectorAll('thead th[data-sort]');
+  for (const th of ths) {
+    const on = th.dataset.sort === state.sort.key;
+    th.classList.toggle('sort-desc', on && state.sort.dir === 'desc');
+    th.classList.toggle('sort-asc', on && state.sort.dir === 'asc');
+  }
+}
+
 function renderEntries() {
   const list = $('list');
-  const sc = list.scrollTop, sl = list.scrollLeft;
+  const g = state.grid;
   const shown = state.entries.length;
-  const total = state.grandTotal != null ? state.grandTotal : shown;
+  // Denominator = exact count matching the CURRENT filter (not the whole table).
+  const total = state.filteredTotal != null ? state.filteredTotal : (state.grandTotal != null ? state.grandTotal : shown);
   $('entry-count').textContent = total ? (shown < total ? `(${shown} of ${total})` : `(${total})`) : '';
-  if (!shown) { list.innerHTML = '<div class="empty">No leads match. Try clearing filters or a different search.</div>'; return; }
-  const capped = shown >= 1000 && shown < total;
-  const note = capped ? `<div class="cap-note">Showing the most recent <b>${shown}</b> of <b>${total}</b> leads — use search or filters to reach any specific lead.</div>` : '';
-  const cols = activeCols();
-  const head = '<thead><tr>' + cols.map(c => `<th class="${c.cls || ''}">${esc(c.h)}</th>`).join('') + '<th class="act"></th></tr></thead>';
-  const body = state.entries.map(e => rowHtml(e, cols)).join('');
-  list.innerHTML = note + `<table class="grid">${head}<tbody>${body}</tbody></table>`;
-  list.scrollTop = sc; list.scrollLeft = sl;
-  wireGrid();
+  if (!shown) {
+    g.tbody = null; g.sig = ''; g.win = null; state.page = 1;
+    $('pager').style.display = 'none';
+    list.innerHTML = '<div class="empty">No leads match. Try clearing filters or a different search.</div>';
+    return;
+  }
+  // A note only shows if we somehow hit the 100k server ceiling.
+  const capped = shown < total;
+  g.note = capped ? `<div class="cap-note">Showing <b>${shown}</b> of <b>${total}</b> matching leads — narrow the filter to load the rest.</div>` : '';
+  g.cols = activeCols();
+  g.head = '<thead><tr>' + g.cols.map(c => `<th class="${c.cls || ''}${c.sortable ? " sortable" : ""}"${c.sortable ? ` data-sort="${c.f}"` : ""}>${esc(c.h)}</th>`).join('') + '<th class="act"></th></tr></thead>';
+  // A shrinking result set can leave us past the end.
+  if (state.page > pageCount()) state.page = pageCount();
+  // Re-measure only when the shape of the grid changes (tab, columns, or how
+  // many rows matched) — not on every data refresh, and never on a page flip.
+  const sig = state.tab + '|' + g.cols.length + '|' + shown + '|' + (capped ? 'c' : '');
+  if (sig !== g.sig || !g.colW || !g.tbody || !list.querySelector('table.grid')) {
+    const m = measureGrid(list, g.cols, g.head);
+    g.colW = m.w; g.rowH = m.rowH; g.sig = sig;
+    buildGridShell(list, g);
+  }
+  paintPage();
+  renderPager();
+  wirePager();
+  markSortHeaders();
 }
 
 function statusChipHtml(e) {
@@ -768,7 +1100,7 @@ function statusChipHtml(e) {
   return `<span class="chip ${tone}">${label}</span>${st}${poc}`;
 }
 
-function rowHtml(e, cols) {
+function rowHtml(e, cols, idx) {
   cols = cols || activeCols();
   const tds = cols.map(c => c.e
     ? `<td class="c ${c.cls || ''}" data-f="${c.f}" data-e="${c.e}" data-v="${esc(cellValue(e, c))}" title="${esc(cellValue(e, c))}">${cellDisplay(e, c)}</td>`
@@ -778,7 +1110,12 @@ function rowHtml(e, cols) {
     ? `<button class="mv close-btn" title="Mark Closed">✔</button><button class="mv fail-btn" title="Mark Failed">✘</button>` : '';
   // View-conversation popup — Responses tab only.
   const vc = state.tab === 'responses' ? `<button class="mv viewconv" title="View conversation">💬</button>` : '';
-  return `<tr data-id="${e.id}">${tds}<td class="act">${mv}${vc}<button class="exp" title="Open full editor">⤢</button><button class="del" title="Delete">×</button></td></tr>`;
+  // Zebra striping keys off the absolute row index: the virtual spacer rows
+  // would otherwise flip :nth-child parity as you scroll.
+  // NB: no generic class name here — .row is already a flex form-layout
+  // utility in style.css and would turn every table row into a flex box.
+  const stripe = (idx % 2) ? ' class="odd"' : '';
+  return `<tr${stripe} data-id="${e.id}">${tds}<td class="act">${mv}${vc}<button class="exp" title="Open full editor">⤢</button><button class="del" title="Delete">×</button></td></tr>`;
 }
 
 function wireGrid() {
@@ -796,6 +1133,11 @@ function onGridClick(ev) {
   if (ev.target.closest('.viewconv')) return openConvModal(e);
   if (ev.target.closest('.exp')) return openEdit(e);
   if (ev.target.closest('a')) return; // let links through
+  // Bio is read-only but often several lines long; clicking it expands the cell
+  // in place (preserving the line breaks Instagram actually stores) instead of
+  // making you hover for a tooltip.
+  const bioTd = ev.target.closest('td.igbio');
+  if (bioTd) { if ((bioTd.textContent || '').trim() !== '—') bioTd.classList.toggle('open'); return; }
   const td = ev.target.closest('td.c'); if (!td || td.querySelector('input,select,textarea')) return;
   beginEdit(td, e);
 }
@@ -909,7 +1251,86 @@ function editPositionCell(td, e, cur) {
 
 function replaceRow(id, entry) {
   const tr = $('list').querySelector(`tr[data-id="${id}"]`);
-  if (tr) tr.outerHTML = rowHtml(entry, activeCols());
+  // Striping is page-relative, so translate the absolute index.
+  const abs = state.entries.findIndex(x => x.id === id);
+  if (tr) tr.outerHTML = rowHtml(entry, activeCols(), abs - (state.page - 1) * state.pageSize);
+  // The DOM no longer matches the cached window — force the next paint through.
+  state.grid.win = null;
+}
+
+/* ── Instagram enrichment (HikerAPI) ─────────────────────────
+   Every call costs credits (2 per lead), so nothing here runs on its own:
+   the user picks a batch and watches it go.                              */
+let igBusy = false;
+
+async function openIgModal() {
+  $('ig-bg').classList.add('open');
+  $('ig-body').innerHTML = '<div class="spin">Checking…</div>';
+  let st;
+  try { st = await api('/api/entries/ig-status'); }
+  catch (e) { $('ig-body').innerHTML = `<div class="sig red"><span class="ic">⚠️</span><span class="tx">${esc(e.message)}</span></div>`; return; }
+  const pageIds = igPageIds();
+  const keyWarn = st.key_set ? '' :
+    '<div class="sig red"><span class="ic">⚠️</span><span class="tx"><b>No HikerAPI key set.</b>' +
+    '<small>Run <code>wrangler secret put HIKER_API_KEY</code> on the leadgen worker first.</small></span></div>';
+  $('ig-body').innerHTML = keyWarn +
+    `<p class="ig-note">Each lead costs <b>2</b> HikerAPI calls (profile + reels). <b>${st.enriched.toLocaleString()}</b> leads already have data.</p>` +
+    `<div class="ig-act"><div><b>This page</b><small>${pageIds.length} lead${pageIds.length === 1 ? "" : "s"} shown — about ${(pageIds.length * 2).toLocaleString()} calls</small></div>` +
+    `<button class="hbtn" id="ig-page"${pageIds.length ? "" : " disabled"}>Fetch</button></div>` +
+    (state.me && state.me.is_admin ?
+      `<div class="ig-act"><div><b>All engaged leads</b><small>Responses + Closed · ${st.engaged_pending.toLocaleString()} still unfetched — about ${(st.engaged_pending * 2).toLocaleString()} calls</small></div>` +
+      `<button class="hbtn" id="ig-engaged"${st.engaged_pending ? "" : " disabled"}>Backfill</button></div>` +
+      `<div class="ig-act"><div><b>Every lead</b><small>${st.all_pending.toLocaleString()} still unfetched — about ${(st.all_pending * 2).toLocaleString()} calls</small></div>` +
+      `<button class="hbtn" id="ig-all"${st.all_pending ? "" : " disabled"}>Backfill</button></div>` : '') +
+    '<div id="ig-prog" class="ig-prog"></div>';
+  if ($('ig-page')) $('ig-page').onclick = () => igRefreshPage();
+  if ($('ig-engaged')) $('ig-engaged').onclick = () => igBackfill('engaged');
+  if ($('ig-all')) $('ig-all').onclick = () => igBackfill('all');
+}
+
+// The leads currently rendered — the page is the unit of spend.
+function igPageIds() {
+  return [...$('list').querySelectorAll('tbody tr[data-id]')].map(tr => +tr.dataset.id);
+}
+
+async function igRefreshPage() {
+  if (igBusy) return; igBusy = true;
+  const ids = igPageIds();
+  const prog = $('ig-prog');
+  try {
+    let done = 0;
+    // Chunked to the server's per-request cap.
+    for (let i = 0; i < ids.length; i += 50) {
+      prog.textContent = `Fetching ${done} / ${ids.length}…`;
+      const r = await api('/api/entries/ig-refresh', { method: 'POST', body: { ids: ids.slice(i, i + 50) } });
+      done += r.done || 0;
+      for (const en of r.entries || []) {
+        const k = state.entries.findIndex(x => x.id === en.id);
+        if (k >= 0) { state.entries[k] = en; replaceRow(en.id, en); }
+      }
+    }
+    prog.textContent = `Done — ${done} lead${done === 1 ? '' : 's'} updated.`;
+    toast('Instagram data updated');
+  } catch (e) { prog.innerHTML = `<span class="pg-err">${esc(e.message)}</span>`; }
+  finally { igBusy = false; }
+}
+
+async function igBackfill(scope) {
+  if (igBusy) return; igBusy = true;
+  const prog = $('ig-prog');
+  let done = 0;
+  try {
+    for (;;) {
+      const r = await api('/api/entries/ig-backfill', { method: 'POST', body: { scope } });
+      done += r.done || 0;
+      prog.textContent = `Fetched ${done}… ${r.remaining.toLocaleString()} left.`;
+      if (r.finished || !r.done) break;
+      if (!$('ig-bg').classList.contains('open')) break;   // closing the modal stops the spend
+    }
+    prog.textContent = `Done — ${done} lead${done === 1 ? '' : 's'} enriched.`;
+    await loadEntries();
+  } catch (e) { prog.innerHTML = `<span class="pg-err">${esc(e.message)}</span>`; }
+  finally { igBusy = false; }
 }
 
 /* ── top-level view switch (CRM pipeline ｜ Unibox email replies) ── */
@@ -936,6 +1357,50 @@ const TABS = [
 function renderTabs() {
   $('tab-bar').innerHTML = TABS.map(t => `<button class="tab ${state.tab === t.k ? 'active' : ''}" data-tab="${t.k}">${esc(t.h)}</button>`).join('');
 }
+/* ── deep links (the Chrome extension links straight into a lead) ──
+   ?lead=<handle>   open that lead's conversation popup
+   ?email=<handle>  open that lead's editor, focused on the email field
+   ?add=<handle>    open the Add-lead modal with the username prefilled
+   Parsed once at boot and HELD: if the user is logged out they hit the login
+   screen first, and the intent has to survive that instead of being dropped. */
+const deepLink = (() => {
+  const q = new URLSearchParams(location.search);
+  for (const kind of ['lead', 'email', 'add']) {
+    const v = (q.get(kind) || '').trim().toLowerCase().replace(/^@+/, '');
+    if (v) return { kind, handle: v };
+  }
+  return null;
+})();
+
+async function runDeepLink() {
+  const { kind, handle } = deepLink;
+  // One-shot: drop the query string so a refresh doesn't reopen the modal.
+  history.replaceState({}, '', location.pathname);
+
+  if (kind === 'add') {
+    await switchTab('leads');
+    $('add-bg').classList.add('open');
+    $('f-social').value = 'https://instagram.com/' + handle;
+    // Fire the live duplicate/CRM preview the form does as you type.
+    $('f-social').dispatchEvent(new Event('input', { bubbles: true }));
+    setTimeout(() => $('f-email').focus(), 60);
+    return;
+  }
+
+  // Surface the row behind the modal, so closing it leaves you on that lead
+  // rather than back in a list of 23k.
+  $('search').value = handle;
+  await switchTab('all');
+  const e = state.entries.find(x => String(x.handle || '').toLowerCase() === handle);
+  if (!e) { toast('@' + handle + ' is not in the CRM'); return; }
+  if (kind === 'email') {
+    openEdit(e);
+    setTimeout(() => { const f = $('e-email'); if (f) { f.focus(); f.select(); } }, 80);
+  } else {
+    openConvModal(e);
+  }
+}
+
 function switchTab(k) {
   state.tab = k;
   renderTabs();
@@ -952,7 +1417,8 @@ function switchTab(k) {
   if (dfEl) { dfEl.style.display = (k === 'closed') ? '' : 'none'; if (k === 'closed') fillDeliveryFilter(); else dfEl.value = ''; }
   const rfEl = $('reason-filter');
   if (rfEl) { rfEl.style.display = (k === 'failed') ? '' : 'none'; if (k === 'failed') fillReasonFilter(); else rfEl.value = ''; }
-  loadEntries();
+  // Returned so a deep link can wait for the rows before opening a modal on one.
+  return loadEntries();
 }
 
 /* ── move to Closed / Failed (popup forms) ─────────────────── */
@@ -1050,6 +1516,10 @@ function videoRowHtml(v) {
 }
 function renderVideos() {
   const list = $('list');
+  // The Videos grid is its own (unpaged) render path — hide the leads pager,
+  // and drop the grid shell so the leads tabs re-measure on the way back.
+  $('pager').style.display = 'none';
+  state.grid.sig = ''; state.grid.tbody = null; state.grid.win = null;
   const sc = list.scrollTop, sl = list.scrollLeft;
   const q = ($('video-search').value || '').trim().toLowerCase();
   let vids = state.videos;
@@ -1285,39 +1755,61 @@ function parseDelimited(text) {
   return rows.filter(r => r.some(c => c.trim() !== ''));
 }
 
-const HANDLE_COLS = ['username', 'handle', 'instagram', 'insta', 'ig', 'profile', 'social', 'url', 'link', 'account'];
+const HANDLE_COLS = ['username', 'handle', 'instagram', 'insta', 'ig', 'profile', 'social', 'url', 'link', 'account',
+  'ig user name', 'ig username', 'instagram handle', 'instagram username', 'ig handle'];
 const EMAIL_COLS = ['email', 'e-mail', 'mail'];
 const NAME_COLS = ['first_name', 'firstname', 'first name', 'name', 'fname'];
-const CAT_COLS = ['category', 'categories', 'type', 'segment', 'label'];
+const CAT_COLS = ['category', 'categories', 'type', 'segment', 'niche'];
+const OWNER_COLS = ['lead owner', 'lead_owner', 'owner', 'poc', 'assigned to', 'assigned'];
+const NOTE_COLS = ['notes', 'note', 'comment', 'comments'];
 
+/* Reads a pasted/dropped master sheet.
+   NB: this used to return only {handle, email} while declaring column lists for
+   name and category — so owner, name and category were silently dropped on every
+   upload even though /api/master/upload accepts all of them. That is what left
+   ~10k leads with no owner and ~11.9k with no name or category. Send everything. */
 function extractMaster(text) {
   const rows = parseDelimited(text);
   if (!rows.length) return { rows: [], note: 'Empty file.' };
-  // Detect header.
   const header = rows[0].map(h => h.trim().toLowerCase());
   const looksHeader = header.some(h => HANDLE_COLS.includes(h) || EMAIL_COLS.includes(h));
-  let hIdx = -1, eIdx = -1, body = rows;
+  const find = list => header.findIndex(h => list.includes(h));
+  let hIdx = -1, eIdx = -1, nIdx = -1, cIdx = -1, oIdx = -1, noIdx = -1, body = rows;
   if (looksHeader) {
     body = rows.slice(1);
-    hIdx = header.findIndex(h => HANDLE_COLS.includes(h));
-    eIdx = header.findIndex(h => EMAIL_COLS.includes(h));
+    hIdx = find(HANDLE_COLS); eIdx = find(EMAIL_COLS);
+    nIdx = find(NAME_COLS); cIdx = find(CAT_COLS); oIdx = find(OWNER_COLS); noIdx = find(NOTE_COLS);
     // Prefer an explicit instagram/username/handle column over a generic url.
     const pref = header.findIndex(h => ['username', 'handle', 'instagram', 'insta', 'ig'].includes(h));
     if (pref >= 0) hIdx = pref;
   }
+  const cell = (r, i) => (i >= 0 ? String(r[i] || '').trim() : '');
   const out = [];
   for (const r of body) {
     let handleCell = hIdx >= 0 ? r[hIdx] : '';
     if (!handleCell) {
-      // Single-column file or no header: take the first cell that looks like a handle/URL.
       handleCell = r.find(c => /instagram\.com/i.test(c)) || r.find(c => c && c.trim()) || '';
     }
-    const email = eIdx >= 0 ? (r[eIdx] || '') : (r.find(c => /@/.test(c) && !/instagram/i.test(c)) || '');
-    if (handleCell && handleCell.trim()) out.push({ handle: handleCell.trim(), email: (email || '').trim() });
+    if (!handleCell || !handleCell.trim()) continue;
+    const email = eIdx >= 0 ? cell(r, eIdx) : (r.find(c => /@/.test(c) && !/instagram/i.test(c)) || '').trim();
+    out.push({
+      handle: handleCell.trim(),
+      email,
+      first_name: cell(r, nIdx),
+      category: cell(r, cIdx),
+      lead_owner: cell(r, oIdx),
+      notes: cell(r, noIdx),
+    });
   }
-  return { rows: out, header: looksHeader ? header : null, handleCol: hIdx >= 0 ? header[hIdx] : '(auto)', emailCol: eIdx >= 0 ? header[eIdx] : '' };
+  return {
+    rows: out, header: looksHeader ? header : null,
+    handleCol: hIdx >= 0 ? header[hIdx] : '(auto)',
+    emailCol: eIdx >= 0 ? header[eIdx] : '',
+    ownerCol: oIdx >= 0 ? header[oIdx] : '',
+    nameCol: nIdx >= 0 ? header[nIdx] : '',
+    catCol: cIdx >= 0 ? header[cIdx] : '',
+  };
 }
-
 function handleFile(file) {
   const reader = new FileReader();
   reader.onload = () => {
@@ -1326,8 +1818,11 @@ function handleFile(file) {
     if (!res.rows.length) { $('master-preview').innerHTML = '<span style="color:var(--red)">No handles found in that file.</span>'; $('master-import').disabled = true; return; }
     $('master-preview').innerHTML =
       `Parsed <b>${res.rows.length}</b> rows from <b>${esc(file.name)}</b>` +
-      (res.handleCol ? ` · handle column: <b>${esc(res.handleCol)}</b>` : '') +
-      (res.emailCol ? ` · email column: <b>${esc(res.emailCol)}</b>` : '') +
+      (res.handleCol ? ` · handle: <b>${esc(res.handleCol)}</b>` : '') +
+      (res.emailCol ? ` · email: <b>${esc(res.emailCol)}</b>` : '') +
+      (res.ownerCol ? ` · owner: <b>${esc(res.ownerCol)}</b>` : ' · <span style="color:var(--orange)">no owner column</span>') +
+      (res.nameCol ? ` · name: <b>${esc(res.nameCol)}</b>` : '') +
+      (res.catCol ? ` · category: <b>${esc(res.catCol)}</b>` : '') +
       `<br><span class="foot-hint">e.g. ${res.rows.slice(0, 3).map(r => esc(r.handle)).join(', ')}…</span>`;
     $('master-mode-row').style.display = 'flex';
     $('master-import').disabled = false;
@@ -1450,16 +1945,36 @@ function markPreset(range) {
 /* ── activity dashboard ────────────────────────────────────── */
 async function openActivity() {
   $('activity-bg').classList.add('open');
-  const from = $('date-from').value, to = $('date-to').value;
-  $('act-range').textContent = (from || to) ? `Range: ${from || '…'} → ${to || '…'} (IST)` : 'Range: all time';
+  // Seed the modal's own date range from the leads page the first time it opens;
+  // after that the modal keeps whatever range the user last picked here.
+  if (!$('act-from').value && !$('act-to').value) {
+    $('act-from').value = $('date-from').value;
+    $('act-to').value = $('date-to').value;
+  }
+  runActivity();
+}
+
+async function runActivity() {
+  const from = $('act-from').value, to = $('act-to').value;
+  $('act-range').textContent = (from || to) ? `${from || '…'} → ${to || '…'} (IST)` : 'all time';
   $('activity-body').innerHTML = '<div class="act-empty">Loading…</div>';
   $('activity-totals').innerHTML = '';
   const p = new URLSearchParams();
   if (from) p.set('from', from); if (to) p.set('to', to);
   let s;
-  try { s = await api('/api/stats?' + p.toString()); }
+  // /api/activity = teammate-ADDED leads only, attributed to the adder.
+  try { s = await api('/api/activity?' + p.toString()); }
   catch (e) { $('activity-body').innerHTML = `<div class="act-empty">${esc(e.message)}</div>`; return; }
   renderActivity(s);
+}
+
+function setActPreset(range) {
+  const df = $('act-from'), dt = $('act-to');
+  if (range === 'all') { df.value = ''; dt.value = ''; }
+  else if (range === 'today') { df.value = istDateStr(0); dt.value = istDateStr(0); }
+  else { df.value = istDateStr(parseInt(range, 10) - 1); dt.value = istDateStr(0); }
+  document.querySelectorAll('.act-presets .chip').forEach(c => c.classList.toggle('active', c.dataset.arange === range));
+  runActivity();
 }
 
 function renderActivity(s) {
@@ -1594,6 +2109,7 @@ function wire() {
   const relist = debounce(loadEntries, 250);
   $('search').addEventListener('input', relist);
   $('owner-filter').onchange = loadEntries;
+  if ($('link-filter')) $('link-filter').onchange = loadEntries;
   $('cat-filter').onchange = loadEntries;
   $('status-filter').onchange = loadEntries;
   $('label-filter').onchange = loadEntries;
@@ -1668,6 +2184,10 @@ function wire() {
   // Activity
   $('activity-btn').onclick = openActivity;
   $('activity-close').onclick = () => $('activity-bg').classList.remove('open');
+  // Activity modal's own date controls (independent of the leads-page filter).
+  $('act-from').onchange = runActivity;
+  $('act-to').onchange = runActivity;
+  document.querySelectorAll('.act-presets .chip').forEach(c => { c.onclick = () => setActPreset(c.dataset.arange); });
 
   // Funnel
   $('funnel-btn').onclick = openFunnel;
@@ -1701,16 +2221,18 @@ function wire() {
   };
 
   // Team modal
+  $('ig-btn').onclick = openIgModal;
+  $('ig-close').onclick = () => $('ig-bg').classList.remove('open');
   $('team-btn').onclick = openTeam;
   $('team-close').onclick = () => $('team-bg').classList.remove('open');
   $('nu-add').onclick = addUser;
 
   // Close modals on backdrop click
-  for (const id of ['master-bg', 'team-bg', 'bulk-bg', 'activity-bg', 'edit-bg', 'cat-bg', 'classify-bg', 'pipe-bg', 'funnel-bg', 'video-bg', 'add-bg', 'close-bg', 'fail-bg']) {
+  for (const id of ['master-bg', 'team-bg', 'bulk-bg', 'activity-bg', 'edit-bg', 'cat-bg', 'classify-bg', 'pipe-bg', 'funnel-bg', 'video-bg', 'add-bg', 'close-bg', 'fail-bg', 'ig-bg']) {
     $(id).addEventListener('click', e => { if (e.target.id === id) $(id).classList.remove('open'); });
   }
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') for (const id of ['master-bg', 'team-bg', 'bulk-bg', 'activity-bg', 'edit-bg', 'cat-bg', 'classify-bg', 'pipe-bg', 'funnel-bg', 'video-bg', 'add-bg', 'close-bg', 'fail-bg']) $(id).classList.remove('open');
+    if (e.key === 'Escape') for (const id of ['master-bg', 'team-bg', 'bulk-bg', 'activity-bg', 'edit-bg', 'cat-bg', 'classify-bg', 'pipe-bg', 'funnel-bg', 'video-bg', 'add-bg', 'close-bg', 'fail-bg', 'ig-bg']) $(id).classList.remove('open');
   });
 }
 

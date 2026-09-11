@@ -21,6 +21,7 @@ import {
   recomputeConversations, linkConversations, emailUpsertStmt, instantlyPost, instantlyGet,
   runRateExtraction, runBodyBackfill, runReplyReconcile, fetchLeadEmails, USD_PER, AUTO_POC_NAMES,
 } from './sync.js';
+import { enrichRows, IG_STEP_LEADS } from './hiker.js';
 
 const SESSION_TTL_DAYS = 30;
 const PBKDF2_ITERATIONS = 100000; // Workers cap PBKDF2 at 100k iterations.
@@ -439,6 +440,7 @@ function entryDict(row, crmUrl) {
     notes: row.notes || '',
     category: row.category || '',
     lead_owner: row.lead_owner,
+    lead_manager: row.lead_manager || '',
     created_by: row.created_by,
     created_at: row.created_at,
     source: row.source || 'added',
@@ -452,6 +454,16 @@ function entryDict(row, crmUrl) {
     deal: dealFields(row),
     ...stageDataFields(row),
     crm,
+    // Instagram enrichment (HikerAPI). null = never fetched, which the grid
+    // shows as a dash rather than a misleading 0.
+    ig_followers: row.ig_followers === null || row.ig_followers === undefined ? null : row.ig_followers,
+    ig_last_post_at: row.ig_last_post_at || '',
+    ig_avg_views_10: row.ig_avg_views_10 === null || row.ig_avg_views_10 === undefined ? null : row.ig_avg_views_10,
+    ig_checked_at: row.ig_checked_at || '',
+    ig_status: row.ig_status || '',
+    ig_bio: row.ig_bio || '',
+    ig_link: row.ig_link || '',
+    ig_link_domain: row.ig_link_domain || '',
     // Combined verdict for the UI (kept independent of the dup signal).
     verdict: verdictFor({ in_master: (row.source === 'master') || !!row.in_master, dup: false }, crm),
     view_conversation: (crm.known && row.email && crmUrl)
@@ -880,6 +892,54 @@ async function handleApi(request, env, url) {
     });
   }
 
+  /* — teammate ADD activity (leads each teammate added, per IST day) —
+       Distinct from /api/stats: counts ONLY teammate-added leads (source='added')
+       and attributes them to the person who ADDED them (created_by), not the
+       lead_owner. Excludes the bulk master-sheet import entirely. Covers both
+       single adds and CSV imports (both stamp created_by + created_at). */
+
+  if (path === '/api/activity' && method === 'GET') {
+    await requireUser(env, request); // visible to everyone
+    const p = url.searchParams;
+    const { from, to, startIso, endIso } = istRange(p.get('from'), p.get('to'));
+    let sql = "SELECT created_at, email_norm, created_by FROM entries WHERE source = 'added'";
+    const args = [];
+    if (startIso) { sql += ' AND created_at >= ?'; args.push(startIso); }
+    if (endIso) { sql += ' AND created_at <= ?'; args.push(endIso); }
+    const [{ results }, usersRes] = await Promise.all([
+      env.DB.prepare(sql).bind(...args).all(),
+      env.DB.prepare('SELECT username, display_name FROM users').all(),
+    ]);
+    // Map the stored adder (username) to a friendly display name.
+    const disp = {};
+    for (const u of usersRes.results) disp[u.username] = u.display_name || u.username;
+
+    let totLeads = 0, totEmail = 0;
+    const members = new Set();
+    const byDay = {};          // day -> { leads, with_email }
+    const byMemberDay = {};    // "day|who" -> { day, owner, leads, with_email }
+    for (const r of results) {
+      const d = istDay(r.created_at);
+      const has = r.email_norm ? 1 : 0;
+      const who = disp[r.created_by] || r.created_by || '(unknown)';
+      members.add(who);
+      totLeads++; totEmail += has;
+      (byDay[d] = byDay[d] || { leads: 0, with_email: 0 }).leads++;
+      byDay[d].with_email += has;
+      const k = d + '|' + who;
+      (byMemberDay[k] = byMemberDay[k] || { day: d, owner: who, leads: 0, with_email: 0 }).leads++;
+      byMemberDay[k].with_email += has;
+    }
+    const days = Object.keys(byDay).sort().reverse();
+    return json({
+      from, to,
+      totals: { leads: totLeads, with_email: totEmail, without_email: totLeads - totEmail },
+      members: [...members].sort((a, b) => a.localeCompare(b)),
+      by_day: days.map(d => ({ day: d, leads: byDay[d].leads, with_email: byDay[d].with_email })),
+      by_member_day: Object.values(byMemberDay),
+    });
+  }
+
   /* — live check (no insert): powers the form's as-you-type preview — */
 
   // Read-only batch lookup against OUR lead database (the `entries` table).
@@ -1023,6 +1083,13 @@ async function handleApi(request, env, url) {
     }
 
     await bumpVersion(env);
+    // Best-effort Instagram enrichment for the lead just added (2 HikerAPI
+    // calls). Deliberately swallowed on failure — a missing follower count must
+    // never cost someone the save.
+    try {
+      const fresh = await env.DB.prepare('SELECT id, handle_norm, ig_user_id FROM entries WHERE handle_norm=?').bind(handle).first();
+      if (fresh) await enrichRows(env, [fresh]);
+    } catch (e) { console.log('ig enrich on add failed:', e && e.message); }
     const row = await env.DB.prepare('SELECT * FROM entries WHERE handle_norm=?').bind(handle).first();
     return json({
       saved: true,
@@ -1075,6 +1142,12 @@ async function handleApi(request, env, url) {
     if (TAB_STAGE[tab]) { sql += ' AND stage = ?'; args.push(TAB_STAGE[tab]); }
     const q = (p.get('q') || '').trim().toLowerCase();
     if (q) { sql += ' AND (LOWER(handle_norm) LIKE ? OR LOWER(email_norm) LIKE ? OR LOWER(first_name) LIKE ?)'; args.push('%' + q + '%', '%' + q + '%', '%' + q + '%'); }
+    // Link-in-bio platform filter ("show me everyone on stan.store").
+    // Matches the stored host exactly, so it uses the index rather than a LIKE scan.
+    const linkDom = (p.get('link_domain') || '').trim().toLowerCase();
+    if (linkDom === '__none__') sql += " AND ig_link_domain = ''";
+    else if (linkDom === '__any__') sql += " AND ig_link_domain != ''";
+    else if (linkDom) { sql += ' AND ig_link_domain = ?'; args.push(linkDom); }
     const signal = p.get('signal') || '';
     if (signal === 'prior') sql += ' AND crm_replied = 1';
     else if (signal === 'contacted') sql += " AND email_norm != '' AND crm_replied = 0";
@@ -1085,14 +1158,18 @@ async function handleApi(request, env, url) {
     const { startIso, endIso } = istRange(p.get('from'), p.get('to'));
     if (startIso) { sql += ' AND created_at >= ?'; args.push(startIso); }
     if (endIso) { sql += ' AND created_at <= ?'; args.push(endIso); }
+    // Capture the WHERE-only query (before ORDER BY / LIMIT) so we can count the
+    // exact number of rows matching the CURRENT filter — the denominator the UI
+    // shows must reflect the filter, not the whole table.
+    const countSql = sql.replace('SELECT * FROM entries', 'SELECT COUNT(*) n FROM entries');
     // Surface data-rich leads (with a real first name) first, so the blank
     // handle+email-only imports don't dominate the top of the list.
     sql += " ORDER BY (first_name != '') DESC, created_at DESC, id DESC";
-    // Default page is generous but bounded so the browser doesn't choke on tens
-    // of thousands of cards; search/filter narrows the full DB server-side.
-    const limit = Math.min(parseInt(p.get('limit') || '1000', 10) || 1000, 50000);
+    // The client loads the full filtered set into the grid, so allow a large
+    // page. Still bounded so a pathological caller can't ask for unbounded rows.
+    const limit = Math.min(parseInt(p.get('limit') || '1000', 10) || 1000, 100000);
     sql += ' LIMIT ' + limit;
-    const [{ results }, ownersRes, statusRes, labelRes, totalRes] = await Promise.all([
+    const [{ results }, ownersRes, statusRes, labelRes, totalRes, filteredRes] = await Promise.all([
       env.DB.prepare(sql).bind(...args).all(),
       env.DB.prepare("SELECT DISTINCT lead_owner FROM entries WHERE lead_owner != '' ORDER BY lead_owner").all(),
       // Status dropdown = the editable statuses vocabulary ({key,label}).
@@ -1102,6 +1179,7 @@ async function handleApi(request, env, url) {
       // /api/entries doesn't full-scan entries on every load.
       env.DB.prepare('SELECT name FROM crm_labels ORDER BY sort, name').all(),
       env.DB.prepare('SELECT COUNT(*) n FROM entries').first(),
+      env.DB.prepare(countSql).bind(...args).first(),
     ]);
     const crmUrl = env.CRM_URL || '';
     return json({
@@ -1113,6 +1191,155 @@ async function handleApi(request, env, url) {
       version: parseInt(await metaGet(env, 'version', '0'), 10),
       total: results.length,
       grand_total: totalRes ? totalRes.n : results.length,
+      // Exact count matching the current filter (drives the "X of N" header).
+      filtered_total: filteredRes ? filteredRes.n : results.length,
+    });
+  }
+
+  /* — Chrome extension lookup —
+       Deliberately NOT cookie-authenticated: the app session is SameSite=Lax, so
+       the browser will never send it on a request originating from instagram.com,
+       and loosening that would drop the CSRF protection for the whole CRM. A
+       shared header key instead, mirroring the CRM's own /api/lookup.
+       No CORS headers on purpose either — the extension fetches from its
+       background service worker (exempt from CORS via host_permissions), so
+       adding Access-Control-Allow-Origin would only widen who can read lead PII
+       if the key ever leaked. */
+  if (path === '/api/ext/lead' && method === 'GET') {
+    const want = (env.EXT_KEY || '').trim();
+    if (!want) throw new ApiError(503, 'Extension key not configured on the worker');
+    if ((request.headers.get('x-ext-key') || '') !== want) throw new ApiError(401, 'Bad extension key');
+    const handle = normHandle(url.searchParams.get('handle') || '');
+    if (!handle) throw new ApiError(400, 'handle required');
+    const row = await env.DB.prepare('SELECT * FROM entries WHERE handle_norm=?').bind(handle).first();
+    if (!row) return json({ found: false, handle });
+    const e = entryDict(row, env.CRM_URL || '');
+    // Breadcrumb: walk pipeline_nodes up from the lead's position. The table is
+    // tiny, so one read and an in-memory walk beats a query per level.
+    let crumb = [];
+    if (row.position) {
+      const { results: nodes } = await env.DB.prepare('SELECT key, parent, label FROM pipeline_nodes').all();
+      const byKey = Object.fromEntries(nodes.map(n => [n.key, n]));
+      let cur = byKey[row.position], guard = 0;
+      while (cur && guard++ < 12) { crumb.unshift(cur.label); cur = cur.parent ? byKey[cur.parent] : null; }
+    }
+    /* contacted/replied on the entry are a SNAPSHOT, only refreshed when a human
+       clicks Refresh CRM — and it is badly stale: 51k outbound emails on record
+       but crm_contacted=1 for only the 4.6k who replied, so the panel would tell
+       you "Never Contacted" about people you have mailed repeatedly. Derive it
+       live from the mail we actually hold, across the entry's own address AND
+       any address on a conversation linked to this handle (leads often reply
+       from a different address than the one on the record). */
+    const addrs = [...new Set([
+      (row.email_norm || '').toLowerCase(),
+      ...(await env.DB.prepare("SELECT email FROM conversations WHERE handle_norm=? OR (? != '' AND email=?)")
+        .bind(handle, row.email_norm || '', row.email_norm || '').all()).results.map(c => (c.email || '').toLowerCase()),
+    ].filter(Boolean))];
+    let sentAt = '', gotAt = '';
+    if (addrs.length) {
+      const ph = addrs.map(() => '?').join(',');
+      const m = await env.DB.prepare(
+        `SELECT MAX(CASE WHEN ue_type IN (1,3) THEN timestamp_email END) AS sent,
+                MAX(CASE WHEN ue_type = 2 THEN timestamp_email END) AS got
+           FROM emails WHERE lead_email IN (${ph})`).bind(...addrs).first();
+      sentAt = (m && m.sent) || ''; gotAt = (m && m.got) || '';
+    }
+    // Fall back to the snapshot only where we hold no mail of our own.
+    const contacted = !!sentAt || !!(e.crm && e.crm.contacted);
+    const replied = !!gotAt || !!(e.crm && e.crm.replied);
+    return json({
+      found: true, handle, id: row.id,
+      stage: e.stage, breadcrumb: crumb, position: row.position || '',
+      status: e.status || '', label: e.label || '',
+      first_name: e.first_name || '', email: e.email || '', category: e.category || '',
+      lead_owner: e.lead_owner || '', poc: (e.crm && e.crm.poc) || '',
+      contacted, replied,
+      last_contact_at: sentAt || (e.crm && e.crm.last_contact_at) || '',
+      last_reply_at: gotAt || (e.crm && e.crm.last_reply_at) || '',
+      campaigns: (e.crm && e.crm.campaigns) || [],
+      created_at: row.created_at || '', source: row.source || '',
+      ig: {
+        followers: e.ig_followers, last_post_at: e.ig_last_post_at,
+        avg_views_10: e.ig_avg_views_10, link: e.ig_link, checked_at: e.ig_checked_at,
+      },
+    });
+  }
+
+  // Distinct link-in-bio hosts with counts — populates the filter dropdown so
+  // you pick a platform instead of guessing what to type.
+  if (path === '/api/entries/ig-domains' && method === 'GET') {
+    await requireUser(env, request);
+    const { results } = await env.DB.prepare(
+      `SELECT ig_link_domain AS domain, COUNT(*) AS n FROM entries
+        WHERE ig_link_domain != '' GROUP BY ig_link_domain ORDER BY n DESC, domain LIMIT 60`).all();
+    const totals = await env.DB.prepare(
+      `SELECT SUM(CASE WHEN ig_link_domain != '' THEN 1 ELSE 0 END) AS with_link,
+              SUM(CASE WHEN ig_checked_at != '' AND ig_link_domain = '' THEN 1 ELSE 0 END) AS without_link
+         FROM entries`).first();
+    return json({
+      domains: results.map(r => ({ domain: r.domain, n: r.n })),
+      with_link: totals ? (totals.with_link || 0) : 0,
+      without_link: totals ? (totals.without_link || 0) : 0,
+    });
+  }
+
+  /* — Instagram enrichment (HikerAPI) —
+       Two calls per lead, so every path here is explicitly bounded and only
+       ever runs when a human asks for it. There is no background refresh. */
+
+  // Refresh an explicit set of leads (the grid's "IG data" action).
+  if (path === '/api/entries/ig-refresh' && method === 'POST') {
+    await requireUser(env, request);
+    const ids = (Array.isArray(body.ids) ? body.ids : [body.id]).map(Number).filter(Boolean);
+    if (!ids.length) throw new ApiError(400, 'No leads given');
+    if (ids.length > IG_STEP_LEADS) throw new ApiError(400, `At most ${IG_STEP_LEADS} leads per request`);
+    const qs = ids.map(() => '?').join(',');
+    const { results } = await env.DB.prepare(
+      `SELECT id, handle_norm, ig_user_id FROM entries WHERE id IN (${qs})`).bind(...ids).all();
+    if (!results.length) return json({ done: 0, entries: [] });
+    const outcomes = await enrichRows(env, results);
+    await bumpVersion(env);
+    const { results: rows } = await env.DB.prepare(
+      `SELECT * FROM entries WHERE id IN (${qs})`).bind(...ids).all();
+    const crmUrl = env.CRM_URL || '';
+    return json({ done: outcomes.length, outcomes, entries: rows.map(r => entryDict(r, crmUrl)) });
+  }
+
+  // One bounded step of the never-enriched backlog. The client polls this so
+  // the spend is visible and stoppable rather than hidden in a cron.
+  if (path === '/api/entries/ig-backfill' && method === 'POST') {
+    const user = await requireUser(env, request);
+    if (!user.is_admin) throw new ApiError(403, 'Admins only');
+    // 'engaged' = leads actually in play; 'all' = the whole table.
+    const engagedOnly = (body.scope || 'engaged') !== 'all';
+    const where = `ig_checked_at = ''` + (engagedOnly ? ` AND stage IN ('Responses','Closed')` : '');
+    const remainingOf = async () => (await env.DB.prepare(
+      `SELECT COUNT(*) c FROM entries WHERE ${where}`).first()).c || 0;
+    const before = await remainingOf();
+    if (!before) return json({ done: 0, remaining: 0, finished: true });
+    const { results } = await env.DB.prepare(
+      `SELECT id, handle_norm, ig_user_id FROM entries WHERE ${where} ORDER BY id LIMIT ?`)
+      .bind(IG_STEP_LEADS).all();
+    const outcomes = await enrichRows(env, results);
+    await bumpVersion(env);
+    const remaining = await remainingOf();
+    return json({ done: outcomes.length, outcomes, remaining, finished: remaining === 0, scope: engagedOnly ? 'engaged' : 'all' });
+  }
+
+  // How much backlog is left, for the confirm dialog's call estimate.
+  if (path === '/api/entries/ig-status' && method === 'GET') {
+    await requireUser(env, request);
+    const row = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM entries WHERE ig_checked_at = '' AND stage IN ('Responses','Closed')) AS engaged_pending,
+         (SELECT COUNT(*) FROM entries WHERE ig_checked_at = '') AS all_pending,
+         (SELECT COUNT(*) FROM entries WHERE ig_status = 'ok') AS enriched`).first();
+    return json({
+      engaged_pending: row ? row.engaged_pending : 0,
+      all_pending: row ? row.all_pending : 0,
+      enriched: row ? row.enriched : 0,
+      per_lead_calls: 2, step: IG_STEP_LEADS,
+      key_set: !!(env.HIKER_API_KEY || '').trim(),
     });
   }
 
@@ -1173,14 +1400,38 @@ async function handleApi(request, env, url) {
     for (const em of emails) { const s = sigFromConvRows(groupsByEmail[em], em); if (s) byEmail[em] = s; }
     for (const h of handles) { const s = sigFromConvRows(groupsByHandle[h], h); if (s) byHandle[h] = s; }
 
+    /* A `conversations` row only exists once a lead REPLIES, so everyone we
+       emailed who never answered produced no signal above and was written back
+       as "never contacted" — 8,594 leads, against 51k outbound emails on record.
+       The single-lead path (localCrm) already falls back to the emails table;
+       this bulk path never did. Same fallback, batched. */
+    const sentByEmail = {};
+    for (let i = 0; i < emails.length; i += CHUNK) {
+      const chunk = emails.slice(i, i + CHUNK);
+      const { results } = await env.DB.prepare(
+        `SELECT lead_email, MAX(timestamp_email) AS last_sent FROM emails
+          WHERE lead_email IN (${chunk.map(() => '?').join(',')}) AND ue_type IN (1,3)
+          GROUP BY lead_email`).bind(...chunk).all();
+      for (const r of results) if (r.lead_email) sentByEmail[r.lead_email] = r.last_sent || '';
+    }
+
     let updated = 0;
     const stmts = [];
     for (const row of rows) {
-      const sig = (row.email_norm && byEmail[row.email_norm] && byEmail[row.email_norm].known)
+      let sig = (row.email_norm && byEmail[row.email_norm] && byEmail[row.email_norm].known)
         ? byEmail[row.email_norm]
         : (row.handle_norm && byHandle[row.handle_norm] && byHandle[row.handle_norm].known)
           ? byHandle[row.handle_norm]
           : (byEmail[row.email_norm] || byHandle[row.handle_norm] || null);
+      // Contacted, never replied. Deliberately leaves status/label/campaigns
+      // empty and replied=0, so the stage logic below does NOT move the lead.
+      if ((!sig || !sig.known) && row.email_norm && sentByEmail[row.email_norm] !== undefined) {
+        sig = {
+          type: 'local', query: row.email_norm, known: true, contacted: true, replied: false,
+          status: '', poc: '', label: '', first_name: '', campaigns: [],
+          last_contact_at: sentByEmail[row.email_norm] || '', last_reply_at: '',
+        };
+      }
       const s = crmSnapshot(sig);
       if (sig && sig.known) updated++;
       // Keep CRM-derived leads in SYNC with the CRM: for leads the team hasn't
@@ -1254,13 +1505,24 @@ async function handleApi(request, env, url) {
     if (!uniq.length) throw new ApiError(400, 'No valid Instagram handles found in the upload');
 
     const added = nowIso();
+    // Manager defaults to the owner, but ONLY when that owner is a CRM user.
+    // Sheets carry bare first names while a user may be stored in full
+    // ("Aditya" vs "Aditya Ray"), so match exact first, then on first name.
+    const team = await teamNames(env);
+    const byFirst = {};
+    for (const t of team) byFirst[String(t).trim().split(/\s+/)[0].toLowerCase()] = t;
+    const managerFor = o => {
+      const v = String(o || '').trim();
+      if (!v) return '';
+      return team.find(t => t.toLowerCase() === v.toLowerCase()) || byFirst[v.toLowerCase()] || '';
+    };
     const stmts = [];
     if (mode === 'replace') stmts.push(env.DB.prepare("DELETE FROM entries WHERE source='master'"));
     for (const u of uniq) {
       stmts.push(env.DB.prepare(
         `INSERT INTO entries
-           (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, lead_owner, created_by, created_at, source, in_master, crm_campaigns)
-         VALUES (?,?,?,?,?,?,?,?,?,'',?, 'master',1,'[]')
+           (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, lead_owner, lead_manager, created_by, created_at, source, in_master, crm_campaigns)
+         VALUES (?,?,?,?,?,?,?,?,?,?,'',?, 'master',1,'[]')
          ON CONFLICT(handle_norm) DO UPDATE SET
            email      = CASE WHEN entries.source='master' AND excluded.email!=''     THEN excluded.email      ELSE entries.email END,
            email_norm = CASE WHEN entries.source='master' AND excluded.email_norm!='' THEN excluded.email_norm ELSE entries.email_norm END,
@@ -1268,8 +1530,9 @@ async function handleApi(request, env, url) {
            notes      = CASE WHEN entries.source='master' AND excluded.notes!=''      THEN excluded.notes      ELSE entries.notes END,
            category   = CASE WHEN entries.source='master' AND excluded.category!=''   THEN excluded.category   ELSE entries.category END,
            lead_owner = CASE WHEN entries.source='master' AND excluded.lead_owner!='' THEN excluded.lead_owner ELSE entries.lead_owner END,
+           lead_manager = CASE WHEN entries.source='master' AND excluded.lead_manager!='' THEN excluded.lead_manager ELSE entries.lead_manager END,
            social_url = CASE WHEN entries.source='master' THEN excluded.social_url ELSE entries.social_url END`)
-        .bind(u.handle, u.raw, u.socialUrl, u.email, u.email, u.firstName, u.notes, u.category, u.owner, added));
+        .bind(u.handle, u.raw, u.socialUrl, u.email, u.email, u.firstName, u.notes, u.category, u.owner, managerFor(u.owner), added));
     }
     for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
 
@@ -1464,7 +1727,7 @@ async function handleApi(request, env, url) {
     const em = entry.email_norm || normEmail(entry.email);
     const h = entry.handle_norm || '';
     const [convRes, campRes, vidRes] = await env.DB.batch([
-      env.DB.prepare(`SELECT key, campaign_id, email, status, last_msg_at FROM conversations WHERE (? != '' AND email=?) OR (? != '' AND handle_norm=?)`).bind(em, em, h, h),
+      env.DB.prepare(`SELECT key, campaign_id, email, status, last_msg_at, lead_reply_count, last_lead_msg_at FROM conversations WHERE (? != '' AND email=?) OR (? != '' AND handle_norm=?)`).bind(em, em, h, h),
       env.DB.prepare('SELECT id, name FROM campaigns'),
       env.DB.prepare("SELECT * FROM videos WHERE entry_id=? ORDER BY (date_posted!='') DESC, date_posted DESC, id DESC").bind(entry.id),
     ]);
@@ -1494,7 +1757,14 @@ async function handleApi(request, env, url) {
     return json({
       entry: entryDict(entry, ''),
       emails: emailsOut, notes, activity, videos: vidRes.results,
-      conversations: convRes.results.map(c => ({ campaign_id: c.campaign_id, campaign_name: names[c.campaign_id] || '', status: c.status })),
+      // lead_reply_count comes from Instantly's per-lead counters, which is how
+      // a conversation row gets created at all. Surfacing it lets the popup say
+      // "they replied, but we do not hold the message" instead of silently
+      // showing a one-sided thread that looks like a bug.
+      conversations: convRes.results.map(c => ({
+        campaign_id: c.campaign_id, campaign_name: names[c.campaign_id] || '', status: c.status,
+        email: c.email || '', lead_reply_count: c.lead_reply_count || 0, last_lead_msg_at: c.last_lead_msg_at || '',
+      })),
     });
   }
 
@@ -2059,6 +2329,9 @@ async function editEntry(env, user, body) {
   if ('notes' in body) { sets.push('notes=?'); args.push(String(body.notes || '').trim()); }
   if ('category' in body) { sets.push('category=?'); args.push(String(body.category || '').trim()); }
   if ('lead_owner' in body) { sets.push('lead_owner=?'); args.push(String(body.lead_owner || '').trim()); }
+  // Manager is the CRM-side teammate accountable for the lead; it defaults to
+  // the owner but is deliberately independent, since many owners are not users.
+  if ('lead_manager' in body) { sets.push('lead_manager=?'); args.push(String(body.lead_manager || '').trim()); }
   // Pipeline position (node key). Setting a non-empty position also snaps the
   // Stage bucket to that node's stage, unless Stage is being set explicitly too.
   // Any human stage/position edit marks the lead 'manual' so CRM re-syncs skip it.

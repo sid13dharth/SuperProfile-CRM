@@ -42,6 +42,7 @@
     <button class="hbtn" id="classify-btn" title="Add or remove statuses &amp; labels">🏷 Statuses &amp; Labels</button>
     <button class="hbtn" id="pipe-btn" title="Manage the pipeline stages &amp; labels">🧭 Pipeline</button>
     <button class="hbtn" id="activity-btn" title="Per-member daily activity">📈 Activity</button>
+    <button class="hbtn" id="ig-btn" title="Fetch followers / last post / avg reel views from Instagram">📸 IG data</button>
     <button class="hbtn" id="refresh-crm-btn" title="Re-check every lead against the CRM">⟳ Refresh CRM</button>
     <button class="hbtn" id="master-btn" title="Upload / refresh the master username list">📄 Master list</button>
     <button class="hbtn" id="team-btn" style="display:none">👥 Team</button>
@@ -64,6 +65,7 @@
         <select id="reason-filter" title="Filter by reason for failure" style="display:none"><option value="">Any reason</option></select>
         <select id="cat-filter"><option value="">Any category</option></select>
         <select id="owner-filter"><option value="">Any owner</option></select>
+        <select id="link-filter" title="Filter by the platform in their Instagram bio link"><option value="">Any link in bio</option></select>
       </div>
       <div class="list-controls" id="video-controls" style="display:none">
         <input id="video-search" placeholder="Search videos (lead, country, type…)">
@@ -85,6 +87,8 @@
       <span class="date-summary" id="date-summary"></span>
     </div>
     <div id="list"><div class="empty">Loading…</div></div>
+    <!-- Pager: lives OUTSIDE #list so it stays visible without scrolling. -->
+    <div id="pager" class="pager" style="display:none"></div>
   </section>
 </div>
 
@@ -209,6 +213,16 @@
 </div>
 
 <!-- Categories manage modal -->
+<!-- Instagram enrichment (HikerAPI) -->
+<div id="ig-bg" class="modal-bg">
+  <div class="modal">
+    <h3>Instagram data</h3>
+    <div class="foot-hint">Fills <b>Followers</b>, <b>Last Post</b> and <b>Avg Views (10)</b> from HikerAPI. New leads are enriched automatically when added; everything else is fetched only when you ask here.</div>
+    <div id="ig-body" style="margin:12px 0"></div>
+    <div class="row"><button class="note-btn" id="ig-close" style="flex:1">Close</button></div>
+  </div>
+</div>
+
 <div id="cat-bg" class="modal-bg">
   <div class="modal">
     <h3>Categories</h3>
@@ -423,8 +437,20 @@
 <div id="activity-bg" class="modal-bg">
   <div class="modal xwide">
     <h3>Member activity</h3>
-    <div class="foot-hint">Leads found and leads-with-email per teammate, per day (IST). Uses the date range selected on the leads page — change it there to re-scope.</div>
-    <div class="row act-range" id="act-range"></div>
+    <div class="foot-hint">Leads each teammate <b>added</b> (single adds + CSV imports) and how many had an email, per day (IST). Excludes the bulk master-sheet import.</div>
+    <div class="row act-daterow">
+      <span class="date-label">📅 From</span>
+      <input type="date" id="act-from" title="From date (IST)">
+      <span class="date-label">to</span>
+      <input type="date" id="act-to" title="To date (IST)">
+      <div class="date-presets act-presets">
+        <button class="chip" data-arange="today">Today</button>
+        <button class="chip" data-arange="7">Last 7d</button>
+        <button class="chip" data-arange="30">Last 30d</button>
+        <button class="chip" data-arange="all">All</button>
+      </div>
+      <span class="act-range" id="act-range"></span>
+    </div>
     <div id="activity-totals" class="act-totals"></div>
     <div id="activity-body" class="act-body"></div>
     <div class="row"><button class="note-btn" id="activity-close" style="flex:1">Close</button></div>

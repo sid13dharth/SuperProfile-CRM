@@ -18,3 +18,11 @@ Thumbs.db
 
 # Local data exports / snapshots — never commit (contain lead PII)
 snapshots/
+
+# One-off data backfills / rollbacks — contain lead PII, keep local only.
+# (Migrations under cloud/migrate_v*.sql ARE source and stay tracked.)
+cloud/backfill_owners*.sql
+cloud/rollback_*.sql
+cloud/merge_master.sql
+cloud/duplicate_conflicts.csv
+unmapped_owners.txt

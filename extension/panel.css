@@ -1,0 +1,58 @@
+/* Scoped hard: every rule is under #spcrm-panel so nothing can leak into
+   Instagram's own styles, and !important on the basics because Instagram sets
+   aggressive resets on generic elements. */
+
+#spcrm-panel {
+  position: fixed !important;
+  top: 84px; right: 18px;
+  width: 290px; max-height: 76vh; overflow: auto;
+  z-index: 2147483000 !important;
+  background: #14161a; color: #e8eaed;
+  border: 1px solid #2b3038; border-radius: 12px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, .55);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  padding: 0 0 10px;
+}
+#spcrm-panel * { box-sizing: border-box; }
+
+#spcrm-panel .spcrm-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px; border-bottom: 1px solid #2b3038;
+  font-size: 12px; letter-spacing: .3px; color: #9aa3ae;
+}
+#spcrm-panel .spcrm-head b { color: #e8eaed; font-weight: 600; }
+#spcrm-panel .spcrm-x { cursor: pointer; font-size: 17px; line-height: 1; color: #9aa3ae; padding: 0 2px; }
+#spcrm-panel .spcrm-x:hover { color: #fff; }
+#spcrm-panel .spcrm-body { padding: 10px 12px 0; }
+
+/* A colour-coded left edge so "is this lead live?" reads at a glance. */
+#spcrm-panel.spcrm-in   { border-left: 3px solid #3ddc84; }
+#spcrm-panel.spcrm-out  { border-left: 3px solid #4b5563; }
+#spcrm-panel.spcrm-warn { border-left: 3px solid #f5a524; }
+
+#spcrm-panel .spcrm-msg { color: #c3c9d1; padding: 2px 0 8px; }
+#spcrm-panel .spcrm-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+#spcrm-panel .spcrm-stage { font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: #232831; color: #c3c9d1; }
+#spcrm-panel .spcrm-s-responses { background: #10361f; color: #6ee7a0; }
+#spcrm-panel .spcrm-s-closed    { background: #10243d; color: #7ab8ff; }
+#spcrm-panel .spcrm-s-failed    { background: #3a1620; color: #ff9aa8; }
+#spcrm-panel .spcrm-s-leads     { background: #2a2410; color: #ffd479; }
+
+#spcrm-panel .spcrm-crumb { font-size: 11.5px; color: #9aa3ae; margin-bottom: 8px; }
+#spcrm-panel .spcrm-sep { opacity: .55; }
+#spcrm-panel .spcrm-row { display: flex; gap: 8px; padding: 2px 0; font-size: 12px; }
+#spcrm-panel .spcrm-k { color: #8b93a0; min-width: 74px; flex: 0 0 74px; }
+#spcrm-panel .spcrm-v { color: #e8eaed; word-break: break-word; }
+#spcrm-panel .spcrm-ago { color: #8b93a0; }
+#spcrm-panel .spcrm-ig { margin-top: 8px; padding-top: 8px; border-top: 1px solid #2b3038; font-size: 11.5px; color: #9aa3ae; }
+/* Actions + state wording */
+#spcrm-panel .spcrm-state { margin-top: 10px; font-size: 12px; color: #c3c9d1; }
+#spcrm-panel .spcrm-flag { margin-top: 10px; font-size: 12px; font-weight: 600; color: #ffd479; }
+#spcrm-panel .spcrm-btn {
+  display: block; margin-top: 8px; padding: 7px 10px; border-radius: 8px;
+  background: #232831; border: 1px solid #2b3038; color: #e8eaed;
+  font-size: 12px; font-weight: 600; text-align: center; text-decoration: none;
+}
+#spcrm-panel .spcrm-btn:hover { border-color: #7ab8ff; color: #fff; }
+#spcrm-panel .spcrm-primary { background: #2f6fe4; border-color: #2f6fe4; }
+#spcrm-panel .spcrm-primary:hover { filter: brightness(1.1); border-color: #2f6fe4; }
