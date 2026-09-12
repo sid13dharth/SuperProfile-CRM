@@ -154,7 +154,12 @@ async function verifyPassword(password, stored) {
 }
 
 async function getUser(env, request) {
-  const token = readCookie(request, 'lg_session');
+  /* The cookie is SameSite=Lax, so it is never sent on a request that starts on
+     instagram.com. The Chrome extension reads the SAME token via chrome.cookies
+     and presents it here instead. A custom header cannot be set by a plain
+     cross-site form or image, so this carries the CSRF protection the SameSite
+     attribute was giving us — it does not weaken it. */
+  const token = readCookie(request, 'lg_session') || (request.headers.get('x-lg-session') || '').trim();
   if (!token) return null;
   const row = await env.DB.prepare(
     `SELECT u.id, u.username, u.display_name, u.is_admin, s.expires_at
@@ -1148,6 +1153,11 @@ async function handleApi(request, env, url) {
     if (linkDom === '__none__') sql += " AND ig_link_domain = ''";
     else if (linkDom === '__any__') sql += " AND ig_link_domain != ''";
     else if (linkDom) { sql += ' AND ig_link_domain = ?'; args.push(linkDom); }
+    // Lead manager filter. '__none__' finds leads with nobody accountable —
+    // which is the useful query, since an owner who is not a CRM user gets none.
+    const mgr = (p.get('manager') || '').trim();
+    if (mgr === '__none__') sql += " AND lead_manager = ''";
+    else if (mgr) { sql += ' AND lead_manager = ?'; args.push(mgr); }
     const signal = p.get('signal') || '';
     if (signal === 'prior') sql += ' AND crm_replied = 1';
     else if (signal === 'contacted') sql += " AND email_norm != '' AND crm_replied = 0";
@@ -1196,6 +1206,38 @@ async function handleApi(request, env, url) {
     });
   }
 
+  /* Extension auth: prefer the caller's own CRM session, fall back to the
+     shared key. Teammates with an account get attributed access and nothing to
+     paste; the key stays for anyone not logged in on that browser. */
+  const extAuth = async () => {
+    const u = await getUser(env, request);
+    if (u) return u;
+    const want = (env.EXT_KEY || '').trim();
+    if (want && (request.headers.get('x-ext-key') || '') === want) return null;   // key-only caller
+    throw new ApiError(401, 'Log in to the CRM in this browser, or set the team key in the extension');
+  };
+
+  /* — Chrome extension: set a lead's email —
+       The one write the extension can do. Same shared-key auth as the lookup.
+       Refuses to clobber an email that is already there, and refuses an address
+       already used by a different lead, because the app dedupes on email and a
+       duplicate would create two records for one person. */
+  if (path === '/api/ext/set-email' && method === 'POST') {
+    await extAuth();
+    const handle = normHandle(body.handle || '');
+    const email = normEmail(body.email || '');
+    if (!handle) throw new ApiError(400, 'handle required');
+    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email)) throw new ApiError(400, 'That does not look like an email address');
+    const row = await env.DB.prepare('SELECT id, email_norm FROM entries WHERE handle_norm=?').bind(handle).first();
+    if (!row) throw new ApiError(404, '@' + handle + ' is not in the CRM');
+    if (row.email_norm) throw new ApiError(409, 'That lead already has an email (' + row.email_norm + ')');
+    const clash = await env.DB.prepare('SELECT handle_norm FROM entries WHERE email_norm=? AND id!=?').bind(email, row.id).first();
+    if (clash) throw new ApiError(409, 'That email already belongs to @' + clash.handle_norm);
+    await env.DB.prepare('UPDATE entries SET email=?, email_norm=? WHERE id=?').bind(email, email, row.id).run();
+    await bumpVersion(env);
+    return json({ ok: true, handle, email });
+  }
+
   /* — Chrome extension lookup —
        Deliberately NOT cookie-authenticated: the app session is SameSite=Lax, so
        the browser will never send it on a request originating from instagram.com,
@@ -1206,9 +1248,7 @@ async function handleApi(request, env, url) {
        adding Access-Control-Allow-Origin would only widen who can read lead PII
        if the key ever leaked. */
   if (path === '/api/ext/lead' && method === 'GET') {
-    const want = (env.EXT_KEY || '').trim();
-    if (!want) throw new ApiError(503, 'Extension key not configured on the worker');
-    if ((request.headers.get('x-ext-key') || '') !== want) throw new ApiError(401, 'Bad extension key');
+    await extAuth();
     const handle = normHandle(url.searchParams.get('handle') || '');
     if (!handle) throw new ApiError(400, 'handle required');
     const row = await env.DB.prepare('SELECT * FROM entries WHERE handle_norm=?').bind(handle).first();

@@ -26,3 +26,6 @@ cloud/rollback_*.sql
 cloud/merge_master.sql
 cloud/duplicate_conflicts.csv
 unmapped_owners.txt
+
+# Build artifact — rebuild with Compress-Archive from extension/
+superprofile-crm-extension.zip

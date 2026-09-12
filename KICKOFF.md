@@ -84,6 +84,10 @@ migrate_v9 live; `/api/activity` + 📈 Activity modal (teammate-ADDED leads onl
    - **No lead changes stage** (verified: stage only moves on `crmSuggest()` or `crm_replied`).
    - **The funnel WILL change** once someone clicks ⟳ Refresh CRM: it is `crm_known=1` based with `reached = contacted`, so "reached" goes ~4,662 → ~12,201. A correction, but it will not match previously quoted figures. Nothing moves until that button is pressed.
 
+1j. **Extension v1.3.0 — per-user auth (2026-09-12, worker `9f8caef3`).** No shared key needed: `chrome.cookies.get()` CAN read the HttpOnly `lg_session` (SameSite only blocks page JS), sent as `x-lg-session`; `getUser()` accepts it alongside the cookie. Key remains as a fallback. Teammates just log into the CRM. Also: `POST /api/ext/set-email` (the one write, 4 guards) and an inline add-email box.
+   - Ship `superprofile-crm-extension.zip` (repo root) on its own — no key, nothing separate.
+   - **Unverified:** chrome.cookies reading HttpOnly in a real browser. Test by clearing the key and seeing if the panel still works.
+
 2. **Security findings, unfixed:** open `/api/setup` = admin-seizure risk; missing admin gates on `/api/sync` and `/api/admin/relink`.
 3. Offered, not done: scrub the one early git commit that briefly tracked `snapshots/` PII; make the conversation popup interactive (reply/status) and available on all tabs; further cron read-reduction.
 4. Deferred: ~11,900 leads lack name/date/category (old handle+email-only master uploads; fix = one consolidated sheet matched by handle — parser `build_master_entries_sql.js`). "Video Ideas" + "Reply Tracker" tabs (columns never defined). Removing the temp `/api/admin/relink` endpoint. 398 email-only conversations stay unlinked (no handle — expected floor).

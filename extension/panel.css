@@ -56,3 +56,17 @@
 #spcrm-panel .spcrm-btn:hover { border-color: #7ab8ff; color: #fff; }
 #spcrm-panel .spcrm-primary { background: #2f6fe4; border-color: #2f6fe4; }
 #spcrm-panel .spcrm-primary:hover { filter: brightness(1.1); border-color: #2f6fe4; }
+
+/* Inline add-email */
+#spcrm-panel .spcrm-mailbox { margin-top: 8px; }
+#spcrm-panel .spcrm-mailbox input {
+  width: 100%; box-sizing: border-box; padding: 7px 9px; border-radius: 8px;
+  border: 1px solid #2b3038; background: #0f1114; color: #e8eaed;
+  font: inherit; font-size: 12px;
+}
+#spcrm-panel .spcrm-mailbox input:focus { border-color: #7ab8ff; outline: none; }
+#spcrm-panel .spcrm-mailmsg { margin-top: 6px; font-size: 11.5px; color: #9aa3ae; min-height: 15px; }
+#spcrm-panel .spcrm-mailmsg.ok { color: #6ee7a0; }
+#spcrm-panel .spcrm-mailmsg.err { color: #ff9aa8; }
+
+#spcrm-panel .spcrm-ver { font-size: 10px; color: #6b7280; margin-left: 6px; font-weight: 400; }

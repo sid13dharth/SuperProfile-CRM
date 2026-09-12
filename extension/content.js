@@ -48,7 +48,8 @@ function ensurePanel() {
   if (!el) {
     el = document.createElement('div');
     el.id = PANEL_ID;
-    el.innerHTML = '<div class="spcrm-head"><b>SuperProfile CRM</b>'
+    const ver = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '?';
+    el.innerHTML = '<div class="spcrm-head"><b>SuperProfile CRM</b><span class="spcrm-ver">v' + ver + '</span>'
       + '<span class="spcrm-x" title="Hide">×</span></div><div class="spcrm-body"></div>';
     document.body.appendChild(el);
     el.querySelector('.spcrm-x').addEventListener('click', () => el.remove());
@@ -65,7 +66,7 @@ function render(handle, d) {
 
   if (d && d.error) {
     el.classList.add('spcrm-warn');
-    const msg = d.error === 'no_key' ? 'No API key set. Click the extension icon to add it.'
+    const msg = d.error === 'no_key' ? 'Log in to the CRM in this browser (or add the team key via the extension icon).'
       : d.error === 'bad_key' ? 'The API key was rejected. Check it in the extension options.'
       : d.error === 'network' ? 'Could not reach the CRM.'
       : 'Lookup failed' + (d.detail ? ` — ${esc(d.detail)}` : '');
@@ -106,8 +107,14 @@ function render(handle, d) {
   const base = esc(d.base || '');
   const qh = encodeURIComponent(handle);
   if (!d.email) {
+    // Inline, so an email can be captured in the two seconds you are looking at
+    // the profile — leaving for the CRM is how it never gets filled in.
     parts.push('<div class="spcrm-flag">No email in DB</div>'
-      + `<a class="spcrm-btn" href="${base}/?email=${qh}" target="_blank" rel="noopener">+ Add email</a>`);
+      + '<button class="spcrm-btn" id="spcrm-addmail">+ Add email</button>'
+      + '<div class="spcrm-mailbox" hidden>'
+      + '<input type="email" id="spcrm-mail" placeholder="name@example.com" autocomplete="off">'
+      + '<button class="spcrm-btn spcrm-primary" id="spcrm-mailsave">Save</button>'
+      + '<div class="spcrm-mailmsg"></div></div>');
   }
   if (d.replied) {
     parts.push(`<a class="spcrm-btn spcrm-primary" href="${base}/?lead=${qh}" target="_blank" rel="noopener">Open Conversation →</a>`);
@@ -116,6 +123,39 @@ function render(handle, d) {
       + `<a class="spcrm-btn" href="${base}/?lead=${qh}" target="_blank" rel="noopener">Open in CRM →</a>`);
   }
   body.innerHTML = parts.join('');
+  wireAddEmail(body, handle);
+}
+
+function wireAddEmail(body, handle) {
+  const btn = body.querySelector('#spcrm-addmail');
+  if (!btn) return;
+  const box = body.querySelector('.spcrm-mailbox');
+  const input = body.querySelector('#spcrm-mail');
+  const save = body.querySelector('#spcrm-mailsave');
+  const msg = body.querySelector('.spcrm-mailmsg');
+  btn.addEventListener('click', () => {
+    box.hidden = false; btn.hidden = true; input.focus();
+  });
+  const submit = async () => {
+    const email = (input.value || '').trim();
+    if (!email) return;
+    save.disabled = true; msg.className = 'spcrm-mailmsg'; msg.textContent = 'Saving…';
+    let r;
+    try { r = await chrome.runtime.sendMessage({ type: 'setEmail', handle, email }); }
+    catch { r = { error: 'network', detail: 'extension reloaded — refresh the page' }; }
+    save.disabled = false;
+    if (r && r.ok) {
+      msg.className = 'spcrm-mailmsg ok';
+      msg.textContent = 'Saved to the CRM.';
+      inflight = '';               // force the panel to re-read on the next pass
+      setTimeout(() => update(), 600);
+      return;
+    }
+    msg.className = 'spcrm-mailmsg err';
+    msg.textContent = (r && (r.detail || r.error)) || 'Could not save.';
+  };
+  save.addEventListener('click', submit);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
 }
 
 let inflight = '';

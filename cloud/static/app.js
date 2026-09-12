@@ -542,6 +542,7 @@ function filterParams() {
   const p = new URLSearchParams();
   const q = $('search').value.trim(); if (q) p.set('q', q);
   const of = $('owner-filter').value; if (of) p.set('owner', of);
+  const mf = $('manager-filter') ? $('manager-filter').value : ''; if (mf) p.set('manager', mf);
   const lf = $('link-filter') ? $('link-filter').value : ''; if (lf) p.set('link_domain', lf);
   const cf = $('cat-filter').value; if (cf) p.set('category', cf);
   const stt = $('status-filter') ? $('status-filter').value : ''; if (stt) p.set('status', stt);
@@ -580,6 +581,7 @@ async function loadEntries() {
   applySort();
   renderEntries();
   refreshOwnerFilter();
+  refreshManagerFilter();
   refreshClassifyFilters();
   refreshLinkFilter();
   loadStats();
@@ -625,13 +627,7 @@ function fillReasonFilter() { fillSubFilter('reason-filter', 'Failed', 'Any reas
 // Stage mirrors the active tab (picking it switches tab); Status/Label narrow
 // the current view. Existing Status/Label selections survive a reload.
 function refreshClassifyFilters() {
-  const stageSel = $('stage-filter');
-  if (stageSel) {
-    stageSel.innerHTML = '<option value="">Any stage</option>'
-      + [['leads', 'Leads'], ['responses', 'Responses'], ['closed', 'Closed'], ['failed', 'Failed']]
-        .map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('');
-    stageSel.value = STAGE_OF_TAB[state.tab] ? state.tab : '';
-  }
+  // (The Stage dropdown was removed — the tab bar already selects the stage.)
   const stSel = $('status-filter');
   if (stSel) {
     const cur = stSel.value;
@@ -678,6 +674,18 @@ async function refreshLinkFilter() {
     + (d.with_link ? `<option value="__any__">— Has a link (${d.with_link.toLocaleString()}) —</option>` : '')
     + (d.without_link ? `<option value="__none__">— No link (${d.without_link.toLocaleString()}) —</option>` : '')
     + state.linkDomains.map(x => `<option value="${esc(x.domain)}">${esc(x.domain)} (${x.n.toLocaleString()})</option>`).join('');
+  sel.value = cur;
+}
+
+// Managers are always CRM users, so this list comes from the team, not from
+// whatever owner strings happen to be in the data.
+function refreshManagerFilter() {
+  const sel = $('manager-filter'); if (!sel) return;
+  const cur = sel.value;
+  const team = (state.team || []).slice().sort((a, b) => a.localeCompare(b));
+  sel.innerHTML = '<option value="">Any lead manager</option>'
+    + '<option value="__none__">— No manager —</option>'
+    + team.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
   sel.value = cur;
 }
 
@@ -1410,8 +1418,7 @@ function switchTab(k) {
   const db = document.querySelector('.date-bar'); if (db) db.style.display = isVideos ? 'none' : '';
   const t = TABS.find(x => x.k === k);
   $('list-title').innerHTML = esc(t.h) + ' <span class="count" id="entry-count"></span>';
-  // Keep the Stage dropdown in sync with the active tab.
-  const sf = $('stage-filter'); if (sf) sf.value = STAGE_OF_TAB[k] ? k : '';
+
   // Delivery-status filter shows only on the Closed tab.
   const dfEl = $('delivery-filter');
   if (dfEl) { dfEl.style.display = (k === 'closed') ? '' : 'none'; if (k === 'closed') fillDeliveryFilter(); else dfEl.value = ''; }
@@ -2115,8 +2122,7 @@ function wire() {
   $('label-filter').onchange = loadEntries;
   $('delivery-filter').onchange = loadEntries;
   $('reason-filter').onchange = loadEntries;
-  // Stage dropdown = the tabs: switch to that tab (or All when cleared).
-  $('stage-filter').onchange = e => switchTab(e.target.value || 'all');
+  if ($('manager-filter')) $('manager-filter').onchange = loadEntries;
 
   // Add-lead modal
   $('open-add-btn').onclick = () => { $('add-bg').classList.add('open'); setTimeout(() => $('f-social').focus(), 60); };
