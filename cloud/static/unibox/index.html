@@ -5,6 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SuperProfile CRM</title>
 <link rel="stylesheet" href="/unibox/style.css">
+<script>
+  /* Theme before first paint. Unibox usually runs inside the Lead-Gen app in
+     an iframe, so prefer the theme the parent passes on the URL; fall back to
+     this origin's own saved choice when opened directly. */
+  try {
+    var q = new URLSearchParams(location.search).get("theme");
+    var t = (q === "dark" || q === "light") ? q : localStorage.getItem("lg_theme");
+    if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+  } catch (e) {}
+  addEventListener("message", function (e) {
+    var d = e && e.data;
+    if (!d || d.type !== "lg-theme") return;
+    if (d.theme === "dark") document.documentElement.dataset.theme = "dark";
+    else delete document.documentElement.dataset.theme;
+  });
+</script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📬</text></svg>">
 </head>
 <body>
@@ -27,18 +43,26 @@
   <header>
     <div class="logo">SuperProfile <span>CRM</span></div>
     <div class="sync-pill"><span class="sync-dot" id="sync-dot"></span><span id="sync-pill">connecting…</span></div>
-    <button class="hbtn" id="sync-now" title="Pull latest from Instantly now">⟳ Sync now</button>
     <select id="ws-select" title="Workspace (Instantly account)"></select>
     <button class="hbtn" id="ws-manage" style="display:none" title="Manage workspaces">⚙</button>
     <div class="spacer"></div>
-    <button class="hbtn" id="export-btn">⬇ Export CSV</button>
-    <button class="hbtn" id="stats-btn">📊 Stats</button>
-    <button class="hbtn" id="manage-btn">🏷 Labels &amp; statuses</button>
-    <button class="hbtn" id="activity-btn" style="display:none">📈 Activity</button>
-    <button class="hbtn" id="team-btn" style="display:none">👥 Team</button>
     <span id="who" style="color:var(--muted);font-size:13px"></span>
     <button class="hbtn" id="logout">Log out</button>
   </header>
+
+  <!-- Right rail: the tools that used to crowd the header. Same ids, same
+       titles — only moved, so every handler still binds. -->
+  <nav id="rightbar">
+    <button class="rb-item" id="sync-now" title="Pull latest from Instantly now">Sync now</button>
+    <button class="rb-item" id="export-btn" title="Export the current view as CSV">Export</button>
+    <button class="rb-item" id="stats-btn" title="Reply and pipeline stats">Stats</button>
+    <button class="rb-item" id="manage-btn" title="Manage labels &amp; statuses">Labels</button>
+    <button class="rb-item" id="activity-btn" style="display:none" title="Per-member daily activity">Activity</button>
+    <button class="rb-item" id="team-btn" style="display:none" title="Manage teammates">Team</button>
+    <div class="rb-spacer"></div>
+    <div class="rb-sep"></div>
+    <button class="rb-item" id="theme-btn" title="Switch between light and dark">Theme</button>
+  </nav>
 
   <div class="body-row">
     <nav class="sidebar">
@@ -61,6 +85,9 @@
     <input type="date" id="date-from">
     <label style="color:var(--muted);font-size:12px">to</label>
     <input type="date" id="date-to">
+    <!-- Zero-height, full-width flex item: forces everything after it onto a
+         new line, so sort and Clear share a row of their own. -->
+    <div class="fbreak"></div>
     <select id="sort-order" title="Order leads by when the lead last replied">
       <option value="newest">Sort: Newest reply first</option>
       <option value="oldest">Sort: Oldest reply first</option>

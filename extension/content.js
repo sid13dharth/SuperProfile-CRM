@@ -106,6 +106,9 @@ function render(handle, d) {
      on someone who never replied would promise a thread that does not exist. */
   const base = esc(d.base || '');
   const qh = encodeURIComponent(handle);
+  // Partner first: having posted for us outranks anything in the pipeline.
+  parts.push(partnerHtml(d, base, qh));
+
   if (!d.email) {
     // Inline, so an email can be captured in the two seconds you are looking at
     // the profile — leaving for the CRM is how it never gets filled in.
@@ -124,6 +127,42 @@ function render(handle, d) {
   }
   body.innerHTML = parts.join('');
   wireAddEmail(body, handle);
+}
+
+/* Videos this creator has posted for us. Shown above the pipeline detail,
+   because "they already made us a video" is the single most useful thing to
+   know when you land on a profile. */
+function partnerHtml(d, base, qh) {
+  const vids = Array.isArray(d.videos) ? d.videos : [];
+  if (!vids.length) return '';
+  const live = vids.filter(v => !v.post_status);
+  const v = live[0] || vids[0];
+  const n = vids.length;
+  const num = x => (x === null || x === undefined || x === '') ? null : Number(x).toLocaleString();
+  const bits = [];
+  if (num(v.views) !== null) bits.push(num(v.views) + ' views');
+  if (num(v.likes) !== null) bits.push(num(v.likes) + ' likes');
+  if (num(v.comments) !== null) bits.push(num(v.comments) + ' comments');
+  const when = v.date_posted ? fmtDay(v.date_posted) : '';
+  const dead = v.post_status ? ' <span class="spcrm-dead">(unavailable)</span>' : '';
+  return '<div class="spcrm-partner">'
+    + '<div class="spcrm-ptag">\u2605 Partner \u00b7 ' + n + ' video' + (n === 1 ? '' : 's') + ' for us</div>'
+    + '<div class="spcrm-pline">' + (when ? '<b>' + esc(when) + '</b>' : '<b>Latest</b>') + dead + '</div>'
+    + (bits.length ? '<div class="spcrm-pstats">' + esc(bits.join(' \u00b7 ')) + '</div>' : '')
+    // esc() escapes quotes, so it is safe inside the attribute. The http(s)
+    // test is the real guard \u2014 never build an href from a stored string
+    // without checking its scheme first.
+    + (/^https?:\/\//i.test(v.url || '') ? '<a class="spcrm-plink" href="' + esc(v.url) + '" target="_blank" rel="noopener">View the post \u2197</a>' : '')
+    + '<a class="spcrm-btn" href="' + base + '/?videos=' + qh + '" target="_blank" rel="noopener">Open videos in CRM</a>'
+    + '</div>';
+}
+
+// YYYY-MM-DD as a short human date; anything else is passed through.
+function fmtDay(s) {
+  const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return String(s || '');
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return +m[3] + ' ' + MON[+m[2] - 1] + ' ' + m[1];
 }
 
 function wireAddEmail(body, handle) {

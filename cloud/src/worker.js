@@ -175,6 +175,22 @@ async function requireUser(env, request) {
   return user;
 }
 
+/* The teammate accountable for a lead. Sheets and forms carry bare first
+   names while a user may be stored in full ("Adi" vs "Aditya Ray"), so match
+   exactly first, then on first name. An owner who is not a CRM user gets no
+   manager — we leave it blank rather than invent an accountable person.
+   Returns an (owner) => name function so the users table is read once. */
+async function managerResolver(env) {
+  const team = await teamNames(env);
+  const byFirst = {};
+  for (const t of team) byFirst[String(t).trim().split(/\s+/)[0].toLowerCase()] = t;
+  return owner => {
+    const v = String(owner || '').trim();
+    if (!v) return '';
+    return team.find(t => t.toLowerCase() === v.toLowerCase()) || byFirst[v.toLowerCase()] || '';
+  };
+}
+
 function ownerName(user) {
   return user.display_name || user.username;
 }
@@ -897,17 +913,28 @@ async function handleApi(request, env, url) {
     });
   }
 
-  /* — teammate ADD activity (leads each teammate added, per IST day) —
-       Distinct from /api/stats: counts ONLY teammate-added leads (source='added')
-       and attributes them to the person who ADDED them (created_by), not the
-       lead_owner. Excludes the bulk master-sheet import entirely. Covers both
-       single adds and CSV imports (both stamp created_by + created_at). */
+  /* — lead-sourcing activity (leads each person found, per IST day) —
+       Distinct from /api/stats, which counts by lead_owner over everything.
+
+       This used to be restricted to source='added' because every master-sheet
+       row carried the IMPORT timestamp, so including them would have piled
+       23k leads onto a handful of days and told you nothing. The date column
+       in each sheet is now honoured, so a master row dates the day the
+       lead was actually found and belongs here — that is the bulk of the
+       real sourcing work.
+
+       Still excluded: source='crm', which is the Instantly sync discovering a
+       replier who was never in our list. Nobody found those, and their
+       created_at is the sync time, not a find date.
+
+       Attribution: created_by when a teammate added it through the app,
+       otherwise lead_owner — master rows have no created_by. */
 
   if (path === '/api/activity' && method === 'GET') {
     await requireUser(env, request); // visible to everyone
     const p = url.searchParams;
     const { from, to, startIso, endIso } = istRange(p.get('from'), p.get('to'));
-    let sql = "SELECT created_at, email_norm, created_by FROM entries WHERE source = 'added'";
+    let sql = "SELECT created_at, email_norm, created_by, lead_owner FROM entries WHERE source IN ('added','master')";
     const args = [];
     if (startIso) { sql += ' AND created_at >= ?'; args.push(startIso); }
     if (endIso) { sql += ' AND created_at <= ?'; args.push(endIso); }
@@ -926,7 +953,7 @@ async function handleApi(request, env, url) {
     for (const r of results) {
       const d = istDay(r.created_at);
       const has = r.email_norm ? 1 : 0;
-      const who = disp[r.created_by] || r.created_by || '(unknown)';
+      const who = disp[r.created_by] || r.created_by || r.lead_owner || '(unknown)';
       members.add(who);
       totLeads++; totEmail += has;
       (byDay[d] = byDay[d] || { leads: 0, with_email: 0 }).leads++;
@@ -1054,6 +1081,7 @@ async function handleApi(request, env, url) {
     const crmResults = local.results;
     const snap = crmSnapshot(sig);
     const created = nowIso();
+    const manager = (await managerResolver(env))(ownerName(user));
     // Initial pipeline placement: a fresh lead is in "Leads"; if the CRM already
     // shows a reply/status, pre-fill the stage + position (still fully editable).
     const sug = crmSuggest(snap.crm_status, snap.crm_label);
@@ -1064,13 +1092,13 @@ async function handleApi(request, env, url) {
     // as a duplicate instead of double-storing.
     const res = await env.DB.prepare(
       `INSERT INTO entries
-        (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, lead_owner, created_by, created_at, source, in_master, stage, position,
+        (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, lead_owner, lead_manager, created_by, created_at, source, in_master, stage, position,
          crm_known, crm_contacted, crm_replied, crm_status, crm_poc, crm_campaigns,
          crm_last_contact_at, crm_last_reply_at, crm_checked_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(handle_norm) DO NOTHING`)
       .bind(handle, (body.social_url || body.handle || '').trim(), canonicalUrl(handle),
-            emailRaw, email, firstName, notes, category, ownerName(user), user.username, created, initStage, initPos,
+            emailRaw, email, firstName, notes, category, ownerName(user), manager, user.username, created, initStage, initPos,
             snap.crm_known, snap.crm_contacted, snap.crm_replied, snap.crm_status, snap.crm_poc,
             snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at)
       .run();
@@ -1124,6 +1152,7 @@ async function handleApi(request, env, url) {
     if (cat) { sql += ' AND category = ?'; args.push(cat); }
     const stg = p.get('stage') || '';
     if (stg) { sql += ' AND stage = ?'; args.push(stg); }
+    if (stg === 'Leads') sql += " AND email_norm != ''";
     // Pipeline position filter — matches the node itself AND everything nested under it.
     // `__unset` = leads with no position (e.g. Closed/Failed leads missing a
     // delivery status / reason).
@@ -1192,8 +1221,11 @@ async function handleApi(request, env, url) {
       env.DB.prepare(countSql).bind(...args).first(),
     ]);
     const crmUrl = env.CRM_URL || '';
+    // Handles that have posted for us, so the grid can badge them.
+    const { results: pv } = await env.DB.prepare("SELECT DISTINCT handle FROM videos WHERE handle != ''").all();
+    const partners = new Set(pv.map(r => r.handle));
     return json({
-      entries: results.map(r => entryDict(r, crmUrl)),
+      entries: results.map(r => ({ ...entryDict(r, crmUrl), partner: partners.has(r.handle_norm) })),
       owners: ownersRes.results.map(o => o.lead_owner),
       // {key,label} pairs — the grid shows label, filters/saves by key.
       statuses: statusRes.results.map(o => ({ key: o.key, label: o.label })),
@@ -1238,6 +1270,18 @@ async function handleApi(request, env, url) {
     return json({ ok: true, handle, email });
   }
 
+  /* Videos a handle has posted for us, newest first. Drives the extension's
+     partner banner, and is cheap enough to run on every profile view because
+     of idx_videos_handle. */
+  const videosFor = async handle => {
+    if (!handle) return [];
+    const { results } = await env.DB.prepare(
+      "SELECT url, date_posted, views, comments, likes, post_type, post_status FROM videos"
+      + " WHERE handle = ? ORDER BY (date_posted != '') DESC, date_posted DESC, id DESC LIMIT 25")
+      .bind(handle).all();
+    return results;
+  };
+
   /* — Chrome extension lookup —
        Deliberately NOT cookie-authenticated: the app session is SameSite=Lax, so
        the browser will never send it on a request originating from instagram.com,
@@ -1252,7 +1296,10 @@ async function handleApi(request, env, url) {
     const handle = normHandle(url.searchParams.get('handle') || '');
     if (!handle) throw new ApiError(400, 'handle required');
     const row = await env.DB.prepare('SELECT * FROM entries WHERE handle_norm=?').bind(handle).first();
-    if (!row) return json({ found: false, handle });
+    const vids = await videosFor(handle);
+    // Someone can have posted for us without ever being a lead row, so the
+    // partner block is returned either way.
+    if (!row) return json({ found: false, handle, videos: vids });
     const e = entryDict(row, env.CRM_URL || '');
     // Breadcrumb: walk pipeline_nodes up from the lead's position. The table is
     // tiny, so one read and an in-memory walk beats a query per level.
@@ -1298,6 +1345,7 @@ async function handleApi(request, env, url) {
       last_reply_at: gotAt || (e.crm && e.crm.last_reply_at) || '',
       campaigns: (e.crm && e.crm.campaigns) || [],
       created_at: row.created_at || '', source: row.source || '',
+      videos: vids,
       ig: {
         followers: e.ig_followers, last_post_at: e.ig_last_post_at,
         avg_views_10: e.ig_avg_views_10, link: e.ig_link, checked_at: e.ig_checked_at,
@@ -1538,6 +1586,9 @@ async function handleApi(request, env, url) {
         category: String((typeof r === 'object' && r.category) || '').trim(),
         notes: String((typeof r === 'object' && r.notes) || '').trim(),
         owner: String((typeof r === 'object' && (r.lead_owner || r.owner)) || '').trim(),
+        // The sheet's own "date found" column, already normalised to
+        // YYYY-MM-DD by the parser. Blank when the sheet has no date.
+        date: String((typeof r === 'object' && r.date) || '').trim(),
       };
       if (!seen.has(handle)) seen.set(handle, rec);
     }
@@ -1545,17 +1596,14 @@ async function handleApi(request, env, url) {
     if (!uniq.length) throw new ApiError(400, 'No valid Instagram handles found in the upload');
 
     const added = nowIso();
+    /* created_at is the day the lead was FOUND, which the sheet knows and we
+       do not — stamping the upload time is what collapsed 15,000 leads onto
+       the import date. Noon IST keeps the day stable when rendered in IST. */
+    const stampOf = d => (/^\d{4}-\d{2}-\d{2}$/.test(d) ? d + 'T06:30:00.000Z' : added);
     // Manager defaults to the owner, but ONLY when that owner is a CRM user.
     // Sheets carry bare first names while a user may be stored in full
     // ("Aditya" vs "Aditya Ray"), so match exact first, then on first name.
-    const team = await teamNames(env);
-    const byFirst = {};
-    for (const t of team) byFirst[String(t).trim().split(/\s+/)[0].toLowerCase()] = t;
-    const managerFor = o => {
-      const v = String(o || '').trim();
-      if (!v) return '';
-      return team.find(t => t.toLowerCase() === v.toLowerCase()) || byFirst[v.toLowerCase()] || '';
-    };
+    const managerFor = await managerResolver(env);
     const stmts = [];
     if (mode === 'replace') stmts.push(env.DB.prepare("DELETE FROM entries WHERE source='master'"));
     for (const u of uniq) {
@@ -1571,8 +1619,12 @@ async function handleApi(request, env, url) {
            category   = CASE WHEN entries.source='master' AND excluded.category!=''   THEN excluded.category   ELSE entries.category END,
            lead_owner = CASE WHEN entries.source='master' AND excluded.lead_owner!='' THEN excluded.lead_owner ELSE entries.lead_owner END,
            lead_manager = CASE WHEN entries.source='master' AND excluded.lead_manager!='' THEN excluded.lead_manager ELSE entries.lead_manager END,
-           social_url = CASE WHEN entries.source='master' THEN excluded.social_url ELSE entries.social_url END`)
-        .bind(u.handle, u.raw, u.socialUrl, u.email, u.email, u.firstName, u.notes, u.category, u.owner, managerFor(u.owner), added));
+           social_url = CASE WHEN entries.source='master' THEN excluded.social_url ELSE entries.social_url END,
+           -- Two sheets can date the same lead differently (one records when it
+           -- was found, another when it was actioned). The earlier one is the
+           -- find, so keep it.
+           created_at = CASE WHEN excluded.created_at < entries.created_at THEN excluded.created_at ELSE entries.created_at END`)
+        .bind(u.handle, u.raw, u.socialUrl, u.email, u.email, u.firstName, u.notes, u.category, u.owner, managerFor(u.owner), stampOf(u.date)));
     }
     for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
 
@@ -1657,7 +1709,7 @@ async function handleApi(request, env, url) {
     const id = parseInt(body.id, 10);
     if (!id) throw new ApiError(400, 'id required');
     const sets = [], args = [];
-    for (const f of ['url', 'date_posted', 'country', 'language', 'video_type', 'budget', 'notes', 'lead_name', 'referral', 'saas']) {
+    for (const f of ['url', 'date_posted', 'country', 'language', 'video_type', 'budget', 'notes', 'lead_name', 'referral', 'saas', 'views', 'comments', 'likes', 'post_type', 'post_status']) {
       if (f in body) { sets.push(`${f}=?`); args.push(String(body[f] || '').trim()); }
     }
     if (!sets.length) throw new ApiError(400, 'Nothing to update');
@@ -2264,6 +2316,7 @@ async function bulkAdd(env, user, rawRows) {
       : (byEmail[email] || byHandle[handle] || null);
 
   const created = nowIso();
+  const managerOf = await managerResolver(env);
   const seen = new Set();
   const report = [];
   const inserts = [];
@@ -2293,12 +2346,12 @@ async function bulkAdd(env, user, rawRows) {
     const initPos = sug ? sug.position : '';
     return env.DB.prepare(
       `INSERT INTO entries
-        (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, lead_owner, created_by, created_at, source, in_master, stage, position,
+        (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, lead_owner, lead_manager, created_by, created_at, source, in_master, stage, position,
          crm_known, crm_contacted, crm_replied, crm_status, crm_poc, crm_campaigns,
          crm_last_contact_at, crm_last_reply_at, crm_checked_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(handle_norm) DO NOTHING`)
-      .bind(r.handle, r.raw, canonicalUrl(r.handle), r.emailRaw, r.email, r.firstName, r.notes, r.category, ownerName(user), user.username, created, initStage, initPos,
+      .bind(r.handle, r.raw, canonicalUrl(r.handle), r.emailRaw, r.email, r.firstName, r.notes, r.category, ownerName(user), managerOf(ownerName(user)), user.username, created, initStage, initPos,
             snap.crm_known, snap.crm_contacted, snap.crm_replied, snap.crm_status, snap.crm_poc,
             snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at);
   });
@@ -2368,7 +2421,16 @@ async function editEntry(env, user, body) {
   if ('first_name' in body) { sets.push('first_name=?'); args.push(String(body.first_name || '').trim()); }
   if ('notes' in body) { sets.push('notes=?'); args.push(String(body.notes || '').trim()); }
   if ('category' in body) { sets.push('category=?'); args.push(String(body.category || '').trim()); }
-  if ('lead_owner' in body) { sets.push('lead_owner=?'); args.push(String(body.lead_owner || '').trim()); }
+  if ('lead_owner' in body) {
+    const newOwner = String(body.lead_owner || '').trim();
+    sets.push('lead_owner=?'); args.push(newOwner);
+    // Only when nobody is accountable yet, and only if the new owner is a CRM
+    // user. An explicit lead_manager in the same request still wins below.
+    if (!('lead_manager' in body)) {
+      const m = (await managerResolver(env))(newOwner);
+      if (m) { sets.push("lead_manager = CASE WHEN lead_manager='' THEN ? ELSE lead_manager END"); args.push(m); }
+    }
+  }
   // Manager is the CRM-side teammate accountable for the lead; it defaults to
   // the owner but is deliberately independent, since many owners are not users.
   if ('lead_manager' in body) { sets.push('lead_manager=?'); args.push(String(body.lead_manager || '').trim()); }

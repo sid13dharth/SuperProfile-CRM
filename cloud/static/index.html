@@ -5,6 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SuperProfile Lead-Gen</title>
 <link rel="stylesheet" href="/style.css">
+<script>
+  /* Runs before the stylesheet paints, so the saved theme is on <html> from
+     the very first frame. Wrapped because storage throws in some privacy
+     modes, in which case we simply render the default (light). */
+  try {
+    var t = localStorage.getItem("lg_theme");
+    if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+  } catch (e) {}
+</script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
 </head>
 <body>
@@ -16,6 +25,23 @@
   <button class="sb-item active" data-view="crm" title="CRM — lead pipeline"><span class="sb-ic">📊</span><span class="sb-lbl">CRM</span></button>
   <button class="sb-item" data-view="unibox" title="Unibox — email replies"><span class="sb-ic">📬</span><span class="sb-lbl">Unibox</span></button>
 </nav>
+<!-- Right rail: the tools that used to crowd the header. Same buttons, same
+     ids, same titles — only moved. Visibility is CSS-driven off .has-sidebar,
+     so nothing in app.js has to show it. -->
+<nav id="rightbar">
+  <button class="rb-item" id="funnel-btn" title="Funnel analytics — where leads leak">Funnel</button>
+  <button class="rb-item" id="classify-btn" title="Add or remove statuses &amp; labels">Statuses</button>
+  <button class="rb-item" id="pipe-btn" title="Manage the pipeline stages &amp; labels">Pipeline</button>
+  <button class="rb-item" id="activity-btn" title="Per-member daily activity">Activity</button>
+  <button class="rb-item" id="ig-btn" title="Fetch followers / last post / avg reel views from Instagram">IG data</button>
+  <button class="rb-item" id="refresh-crm-btn" title="Re-check every lead against the CRM">Refresh CRM</button>
+  <button class="rb-item" id="master-btn" title="Upload / refresh the master username list">Master list</button>
+  <button class="rb-item" id="team-btn" style="display:none">Team</button>
+  <div class="rb-spacer"></div>
+  <div class="rb-sep"></div>
+  <button class="rb-item" id="theme-btn" title="Switch between light and dark">Theme</button>
+</nav>
+
 <!-- Unibox = the CRM interface, same-origin, on the merged DB (shares this login). -->
 <iframe id="unibox-frame" title="Unibox" style="display:none"></iframe>
 
@@ -38,26 +64,24 @@
     <div class="logo">SuperProfile <span>Lead-Gen</span></div>
     <div class="sync-pill"><span class="sync-dot" id="live-dot"></span><span id="live-pill">live</span></div>
     <div class="spacer"></div>
-    <button class="hbtn" id="funnel-btn" title="Funnel analytics — where leads leak">📊 Funnel</button>
-    <button class="hbtn" id="classify-btn" title="Add or remove statuses &amp; labels">🏷 Statuses &amp; Labels</button>
-    <button class="hbtn" id="pipe-btn" title="Manage the pipeline stages &amp; labels">🧭 Pipeline</button>
-    <button class="hbtn" id="activity-btn" title="Per-member daily activity">📈 Activity</button>
-    <button class="hbtn" id="ig-btn" title="Fetch followers / last post / avg reel views from Instagram">📸 IG data</button>
-    <button class="hbtn" id="refresh-crm-btn" title="Re-check every lead against the CRM">⟳ Refresh CRM</button>
-    <button class="hbtn" id="master-btn" title="Upload / refresh the master username list">📄 Master list</button>
-    <button class="hbtn" id="team-btn" style="display:none">👥 Team</button>
     <span id="who" class="who"></span>
     <button class="hbtn" id="logout">Log out</button>
   </header>
 
   <!-- Entries list (full width) -->
   <section class="list-panel">
-    <div class="tab-bar" id="tab-bar"></div>
+    <!-- Tabs and the search box share one line; the tab bar keeps its own
+         element so renderTabs() still owns its HTML. -->
+    <div class="tab-row">
+      <div class="tab-bar" id="tab-bar"></div>
+      <div class="tab-tools" id="tab-tools">
+        <input id="search" placeholder="Search handle, name or email…">
+      </div>
+    </div>
     <div class="list-head">
       <h2 id="list-title">Today's Leads <span class="count" id="entry-count"></span></h2>
+      <button class="add-lead-btn" id="open-add-btn">＋ Add lead</button>
       <div class="list-controls" id="lead-controls">
-        <button class="add-lead-btn" id="open-add-btn">＋ Add lead</button>
-        <input id="search" placeholder="Search handle, name or email…">
         <select id="status-filter" title="Filter by status"><option value="">Any status</option></select>
         <select id="label-filter" title="Filter by label"><option value="">Any label</option></select>
         <select id="delivery-filter" title="Filter by delivery status" style="display:none"><option value="">Any delivery status</option></select>
@@ -66,6 +90,7 @@
         <select id="owner-filter"><option value="">Any owner</option></select>
         <select id="manager-filter" title="Filter by the CRM teammate accountable for the lead"><option value="">Any lead manager</option></select>
         <select id="link-filter" title="Filter by the platform in their Instagram bio link"><option value="">Any link in bio</option></select>
+        <button class="hbtn clear-btn" id="clear-filters" title="Reset every filter, the search box and the date range">Clear all filters</button>
       </div>
       <div class="list-controls" id="video-controls" style="display:none">
         <input id="video-search" placeholder="Search videos (lead, country, type…)">
@@ -437,7 +462,7 @@
 <div id="activity-bg" class="modal-bg">
   <div class="modal xwide">
     <h3>Member activity</h3>
-    <div class="foot-hint">Leads each teammate <b>added</b> (single adds + CSV imports) and how many had an email, per day (IST). Excludes the bulk master-sheet import.</div>
+    <div class="foot-hint">Leads each person <b>found</b> and how many had an email, per day (IST) — master-sheet rows included, dated by the sheet’s own date column. Excludes leads the Instantly sync discovered on its own.</div>
     <div class="row act-daterow">
       <span class="date-label">📅 From</span>
       <input type="date" id="act-from" title="From date (IST)">

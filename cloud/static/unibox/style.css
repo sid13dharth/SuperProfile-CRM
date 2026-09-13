@@ -1,8 +1,35 @@
+/* ── Theme tokens ───────────────────────────────────
+   Deliberately identical to the Lead-Gen app's palette: Unibox renders
+   inside that app in an iframe, so any drift between the two shows up as a
+   seam. Light is the default; dark is the palette this app has always used,
+   kept exactly, so switching back gives the old look.
+
+   Applied to <html> as data-theme by the inline script in index.html, before
+   first paint. Inside the iframe the parent posts its theme across, so the
+   two panes never disagree. */
 :root {
-  --bg: #0d1117;
-  --bg2: #161b22;
-  --bg3: #1c2333;
-  --border: #2d3648;
+  --bg: #f2f5f9;
+  --bg2: #ffffff;
+  --bg3: #eef1f7;
+  --border: #e2e7f0;
+  --text: #1b2432;
+  --muted: #626e80;
+  --accent: #2f7df6;
+  --red: #dc2f36;
+  --orange: #b8730c;
+  --green: #1f9d4d;
+  --purple: #7c4ddb;
+  --radius: 10px;
+  color-scheme: light;
+  --scrim: rgba(21, 28, 40, .42);
+  --shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
+  --shadow-lg: 0 12px 34px rgba(16,24,40,.14);
+}
+:root[data-theme="dark"] {
+  --bg: #000000;
+  --bg2: #0e0e11;
+  --bg3: #17171c;
+  --border: #26262e;
   --text: #e6edf3;
   --muted: #8b98a9;
   --accent: #4f8ef7;
@@ -10,7 +37,10 @@
   --orange: #f0a03c;
   --green: #3fb950;
   --purple: #a371f7;
-  --radius: 10px;
+  color-scheme: dark;
+  --scrim: rgba(0, 0, 0, .6);
+  --shadow: 0 1px 2px rgba(0,0,0,.34);
+  --shadow-lg: 0 14px 40px var(--scrim);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -135,7 +165,7 @@ header .spacer { flex: 1; }
   display: none; position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
   min-width: 320px; max-height: 380px; overflow-y: auto; padding: 6px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  box-shadow: var(--shadow-lg);
 }
 .dd-menu.open { display: block; }
 .dd-menu label {
@@ -157,7 +187,7 @@ header .spacer { flex: 1; }
 
 /* POC + social chips */
 .chip.poc { background: rgba(79,142,247,.12); color: var(--accent); border-color: transparent; font-weight: 700; }
-.chip.rate { background: rgba(63,185,80,.14); color: #3fb950; border-color: transparent; font-weight: 700; }
+.chip.rate { background: rgba(63,185,80,.14); color: var(--green); border-color: transparent; font-weight: 700; }
 
 /* Rate-range chip bar (Rates quoted view) */
 .rate-bar { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 12px; }
@@ -165,15 +195,15 @@ header .spacer { flex: 1; }
   background: var(--bg2); border: 1px solid var(--border); color: var(--muted);
   padding: 5px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; cursor: pointer;
 }
-.rate-chip:hover { border-color: #3fb950; color: var(--text); }
-.rate-chip.active { border-color: #3fb950; color: var(--text); background: rgba(63,185,80,.14); }
+.rate-chip:hover { border-color: var(--green); color: var(--text); }
+.rate-chip.active { border-color: var(--green); color: var(--text); background: rgba(63,185,80,.14); }
 .rate-chip .n {
   margin-left: 6px; background: var(--bg3); color: var(--muted);
   padding: 0 6px; border-radius: 999px; font-size: 11px;
 }
 .rate-summary { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 10px; font-size: 13px; color: var(--muted); }
 .rate-summary b { color: var(--text); }
-.d-rate { color: #3fb950; font-weight: 700; }
+.d-rate { color: var(--green); font-weight: 700; }
 a.chip.social { background: rgba(163,113,247,.12); color: var(--purple); border-color: transparent;
   text-decoration: none; font-weight: 700; }
 a.chip.social:hover { text-decoration: underline; }
@@ -241,7 +271,7 @@ a.chip.social:hover { text-decoration: underline; }
 
 /* ── Drawer ────────────────────────────────────────── */
 #overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,.5);
+  position: fixed; inset: 0; background: var(--scrim);
   display: none; z-index: 40;
 }
 #drawer {
@@ -314,7 +344,7 @@ a.chip.social:hover { text-decoration: underline; }
 .foot-hint { color: var(--muted); font-size: 12px; }
 
 /* ── Modal (team) ──────────────────────────────────── */
-#modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+#modal-bg { position: fixed; inset: 0; background: var(--scrim); display: none;
   align-items: center; justify-content: center; z-index: 60; }
 .modal { background: var(--bg2); border: 1px solid var(--border);
   border-radius: 14px; padding: 24px; width: 380px; }
@@ -375,13 +405,13 @@ a.chip.social:hover { text-decoration: underline; }
 .ws-row .ws-del:hover { border-color: var(--red); color: var(--red); }
 
 #status-bg, #manage-bg, #stats-bg, #rate-bg, #activity-bg, #ws-bg {
-  position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+  position: fixed; inset: 0; background: var(--scrim); display: none;
   align-items: center; justify-content: center; z-index: 70;
 }
 #status-bg .modal, #manage-bg .modal, #stats-bg .modal, #rate-bg .modal { width: 420px; max-width: 94vw; max-height: 88vh; overflow-y: auto; }
 #activity-bg .modal { width: 560px; max-width: 94vw; max-height: 88vh; overflow-y: auto; }
 #ws-bg .modal { width: 460px; max-width: 94vw; max-height: 88vh; overflow-y: auto; }
-#links-manage-bg { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 70; }
+#links-manage-bg { position: fixed; inset: 0; background: var(--scrim); display: none; align-items: center; justify-content: center; z-index: 70; }
 #links-manage-bg .modal { width: 440px; max-width: 94vw; max-height: 88vh; overflow-y: auto; }
 .act-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .act-table th, .act-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
@@ -401,7 +431,7 @@ a.chip.social:hover { text-decoration: underline; }
 .add-line-btn { background: none; border: 1px dashed var(--border); color: var(--accent);
   border-radius: 8px; padding: 7px 12px; font-size: 12px; font-weight: 700; cursor: pointer; margin-bottom: 14px; }
 .add-line-btn:hover { border-color: var(--accent); }
-.rate-prev { margin: 6px 0 14px; font-size: 14px; color: #3fb950; font-weight: 700; min-height: 18px; }
+.rate-prev { margin: 6px 0 14px; font-size: 14px; color: var(--green); font-weight: 700; min-height: 18px; }
 .d-rate-edit { cursor: pointer; color: var(--accent); font-weight: 700; margin-left: 6px; }
 .d-rate-edit:hover { text-decoration: underline; }
 .d-instantly { color: var(--accent); font-weight: 700; text-decoration: none; }
@@ -442,7 +472,7 @@ a.chip.social:hover { text-decoration: underline; }
 .tpl-item:hover { background: var(--bg3); }
 .tpl-item.manage { border-top: 1px solid var(--border); margin-top: 4px; color: var(--muted); }
 #tpl-manage-bg {
-  position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+  position: fixed; inset: 0; background: var(--scrim); display: none;
   align-items: center; justify-content: center; z-index: 70;
 }
 .modal.wide { width: 560px; max-width: 94vw; max-height: 88vh; overflow-y: auto; }
@@ -451,3 +481,85 @@ a.chip.social:hover { text-decoration: underline; }
   .lead .who { width: 140px; }
   .lead .preview { display: none; }
 }
+
+/* ── Row metadata: text, not pills ──────────────────
+   The handle / owner / campaign / age used to be five rounded boxes per row,
+   which read as chrome rather than content. They keep their colour coding —
+   that is what makes a row scannable — and lose the container. */
+.lead .chip, .lead .badge, .lead .status-chip {
+  background: none; border: 0; padding: 0; border-radius: 0;
+  font-weight: 600; letter-spacing: .01em;
+}
+.lead .chip.poc { color: var(--accent); }
+.lead .chip.rate { color: var(--green); }
+.lead a.chip.social { color: var(--purple); }
+.lead .chip.camp { color: var(--muted); font-weight: 500; }
+.lead .chip.label-chip { color: var(--orange); }
+.lead .badge.b-needs_reply, .lead .badge.b-first_reply { color: var(--red); }
+.lead .badge.b-in_conversation { color: var(--accent); }
+.lead .badge.b-followup_due { color: var(--orange); }
+.lead .badge.b-waiting { color: var(--green); }
+.lead .badge.b-snoozed { color: var(--purple); }
+.lead .badge.b-closed { color: var(--muted); }
+.lead .status-chip.tone-good { color: var(--green); }
+.lead .status-chip.tone-bad { color: var(--red); }
+.lead .status-chip.tone-warn { color: var(--orange); }
+.lead .status-chip.tone-info { color: var(--accent); }
+.lead .status-chip.tone-mut { color: var(--muted); }
+/* Without boxes the row needs its own rhythm to stay readable. */
+.lead { gap: 14px; box-shadow: var(--shadow); }
+/* The row is a single non-wrapping flex line, so every free-text piece has
+   to be allowed to shrink or the campaign name pushes the age off the end.
+   The age is the one part that must always be legible, so it alone is fixed. */
+.lead .badge { flex: 0 0 auto; text-align: right; }
+.lead .chip, .lead a.chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lead .chip.camp { flex: 0 1 auto; max-width: 150px; }
+.lead a.chip.social, .lead .chip.poc { flex: 0 0 auto; }
+
+/* ── Right-hand tool rail ───────────────────────────
+   Same buttons, same ids, same handlers — only moved out of the header.
+   Icons come from ::before rather than a child span, so any code that writes
+   button.textContent cannot wipe them. */
+#rightbar { display: none; }
+body.has-rail #rightbar {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 66px; z-index: 60;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 12px 0 10px; background: var(--bg2); border-left: 1px solid var(--border);
+  overflow-y: auto; overflow-x: hidden;
+}
+body.has-rail #app { margin-right: 66px; }
+.rb-item {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  width: 60px; padding: 7px 1px; background: none; border: 1px solid transparent;
+  color: var(--muted); border-radius: 10px; cursor: pointer;
+  font-size: 9px; font-weight: 600; line-height: 1.2; text-align: center;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+.rb-item::before { content: var(--rb-ic, "\2022"); font-size: 17px; line-height: 1; }
+.rb-item:hover { color: var(--text); background: var(--bg3); }
+.rb-sep { width: 28px; height: 1px; background: var(--border); margin: 7px 0; flex: 0 0 auto; }
+.rb-spacer { flex: 1 1 auto; min-height: 4px; }
+#sync-now    { --rb-ic: "\27F3"; }
+#export-btn  { --rb-ic: "\2B07"; }
+#stats-btn   { --rb-ic: "\1F4CA"; }
+#manage-btn  { --rb-ic: "\1F3F7"; }
+#activity-btn{ --rb-ic: "\1F4C8"; }
+#team-btn    { --rb-ic: "\1F465"; }
+#theme-btn   { --rb-ic: "\1F319"; }
+:root[data-theme="dark"] #theme-btn { --rb-ic: "\2600"; }
+
+/* ── Surfaces ───────────────────────────────────────*/
+header { box-shadow: var(--shadow); position: relative; z-index: 2; }
+.modal, .modal-card { box-shadow: var(--shadow-lg); }
+.login-card { box-shadow: var(--shadow-lg); }
+
+/* ── Filter row ─────────────────────────────────────
+   Search takes the slack on its line; the sort dropdown and Clear sit on the
+   line below (see .fbreak in the markup). */
+#filters #search {
+  flex: 1 1 340px; min-width: 260px;
+  padding: 9px 14px; font-size: 13px;
+}
+.fbreak { flex-basis: 100%; height: 0; margin: 0; }
+#filters #sort-order { flex: 0 0 auto; }
+#filters #clear-filters { flex: 0 0 auto; }

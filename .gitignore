@@ -24,6 +24,8 @@ snapshots/
 cloud/backfill_owners*.sql
 cloud/rollback_*.sql
 cloud/merge_master.sql
+cloud/fix_dates.sql
+cloud/import_videos.sql
 cloud/duplicate_conflicts.csv
 unmapped_owners.txt
 

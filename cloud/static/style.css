@@ -1,8 +1,44 @@
+/* ── Theme tokens ───────────────────────────────────
+   Light is the default; dark is the same palette this app has always used,
+   kept byte-for-byte so switching back gives exactly the old look. Every
+   rule below reads tokens only — no rule hardcodes a colour — so a new
+   theme is a matter of adding one more block here.
+
+   --bg   page behind everything      --bg2  cards, header, rails
+   --bg3  subtle fills, chips, table headers
+   --tint-*  translucent status fills   --bd-*  their borders
+   Set on <html> as data-theme by the inline script in index.html, which runs
+   before first paint so the page never flashes the wrong palette. */
 :root {
-  --bg: #0d1117;
-  --bg2: #161b22;
-  --bg3: #1c2333;
-  --border: #2d3648;
+  --bg: #f2f5f9;
+  --bg2: #ffffff;
+  --bg3: #eef1f7;
+  --border: #e2e7f0;
+  --text: #1b2432;
+  --muted: #626e80;   /* AA (4.57:1) on the --bg3 table-header fill, not just on white */
+  --accent: #2f7df6;
+  --red: #dc2f36;
+  --orange: #b8730c;
+  --green: #1f9d4d;
+  --blue: #2f7df6;
+  --purple: #7c4ddb;
+  --radius: 10px;
+  color-scheme: light;
+  --scrim: rgba(21, 28, 40, .42);
+  --stripe: rgba(20, 30, 50, .022);
+  --shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
+  --shadow-lg: 0 12px 34px rgba(16,24,40,.14);
+  --tint-green: rgba(31,157,77,.12);   --bd-green: rgba(31,157,77,.32);
+  --tint-blue: rgba(47,125,246,.12);   --bd-blue: rgba(47,125,246,.32);
+  --tint-orange: rgba(184,115,12,.13); --bd-orange: rgba(184,115,12,.32);
+  --tint-red: rgba(220,47,54,.11);     --bd-red: rgba(220,47,54,.30);
+  --tint-purple: rgba(124,77,219,.12); --bd-purple: rgba(124,77,219,.34);
+}
+:root[data-theme="dark"] {
+  --bg: #000000;
+  --bg2: #0e0e11;
+  --bg3: #17171c;
+  --border: #26262e;
   --text: #e6edf3;
   --muted: #8b98a9;
   --accent: #4f8ef7;
@@ -11,7 +47,16 @@
   --green: #3fb950;
   --blue: #4f8ef7;
   --purple: #a371f7;
-  --radius: 10px;
+  color-scheme: dark;
+  --scrim: rgba(0, 0, 0, .6);
+  --stripe: rgba(255, 255, 255, .015);
+  --shadow: 0 1px 2px rgba(0,0,0,.34);
+  --shadow-lg: 0 14px 40px rgba(0,0,0,.5);
+  --tint-green: rgba(63,185,80,.15);   --bd-green: rgba(63,185,80,.30);
+  --tint-blue: rgba(79,142,247,.15);   --bd-blue: rgba(79,142,247,.30);
+  --tint-orange: rgba(240,160,60,.15); --bd-orange: rgba(240,160,60,.30);
+  --tint-red: rgba(248,81,73,.15);     --bd-red: rgba(248,81,73,.30);
+  --tint-purple: rgba(163,113,247,.16); --bd-purple: rgba(163,113,247,.35);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow-x: hidden; max-width: 100%; }
@@ -22,7 +67,7 @@ body {
 }
 button { font: inherit; cursor: pointer; }
 input, select, textarea { font: inherit; color: var(--text); }
-select { color-scheme: dark; background: var(--bg); color: var(--text); }
+select { background: var(--bg); color: var(--text); }
 /* Native dropdown list items — force dark so options are readable everywhere. */
 option { background-color: var(--bg2); color: var(--text); }
 .fld select {
@@ -137,9 +182,9 @@ header .logo span { color: var(--accent); }
 .br-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
 .br-row .h { flex: 1; }
 .br-row .st { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
-.br-row .st.added { background: rgba(63,185,80,.14); color: var(--green); }
-.br-row .st.duplicate { background: rgba(240,160,60,.14); color: var(--orange); }
-.br-row .st.invalid { background: rgba(248,81,73,.14); color: var(--red); }
+.br-row .st.added { background: var(--tint-green); color: var(--green); }
+.br-row .st.duplicate { background: var(--tint-orange); color: var(--orange); }
+.br-row .st.invalid { background: var(--tint-red); color: var(--red); }
 .br-row .note { color: var(--muted); font-size: 11px; }
 
 /* ── Live preview signals ──────────────────────────── */
@@ -190,7 +235,7 @@ header .logo span { color: var(--accent); }
 .date-label { color: var(--muted); font-size: 12px; }
 .date-bar input[type=date] {
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  padding: 6px 9px; outline: none; font-size: 13px; color-scheme: dark;
+  padding: 6px 9px; outline: none; font-size: 13px;
 }
 .date-bar input[type=date]:focus { border-color: var(--accent); }
 .date-presets { display: flex; gap: 6px; }
@@ -224,11 +269,11 @@ table.grid thead th {
 table.grid.gfixed { table-layout: fixed; }
 /* Striping keys off the row index within the page, set in rowHtml — using
    :nth-child would be fragile as rows are replaced wholesale each page. */
-table.grid tbody tr.odd { background: rgba(255,255,255,.015); }
+table.grid tbody tr.odd { background: var(--stripe); }
 table.grid tbody tr:hover { background: var(--bg2); }
 td.c { cursor: cell; }
 td.c:hover { background: var(--bg3); box-shadow: inset 0 0 0 1px var(--accent); }
-td.uname { font-weight: 600; max-width: 160px; }
+td.uname { font-weight: 600; max-width: 230px; }
 td.dt { max-width: 74px; color: var(--muted); }
 td.lnk { max-width: 220px; }
 td.lnk a, .st .vc { color: var(--accent); text-decoration: none; }
@@ -241,7 +286,9 @@ td.lnk a:hover { text-decoration: underline; }
 table.grid td.notes, table.grid th.notes { min-width: 280px; max-width: 280px; }
 td.notes { color: var(--muted); }
 td.cat { color: var(--purple); }
-.ph { color: var(--border); }
+/* The em-dash placeholder used --border, which on a light page is almost the
+   same colour as the cell behind it. Muted reads in both themes. */
+.ph { color: var(--muted); opacity: .65; }
 input.celled, select.celled, textarea.celled {
   width: 100%; box-sizing: border-box; border: 1px solid var(--accent); background: var(--bg);
   color: var(--text); font: inherit; font-size: 12.5px; padding: 2px 6px; border-radius: 3px; outline: none;
@@ -257,7 +304,7 @@ td.lbl { max-width: 130px; }
 /* Conversation popup: reply-on-record-but-no-body notice */
 .conv-gap {
   margin: 0 0 10px; padding: 8px 10px; border-radius: 7px; font-size: 12px; line-height: 1.5;
-  background: rgba(255,170,0,.08); border: 1px solid var(--orange); color: var(--text);
+  background: var(--tint-orange); border: 1px solid var(--bd-orange); color: var(--text);
 }
 .conv-gap .muted { color: var(--muted); }
 
@@ -345,7 +392,7 @@ table.grid thead th.sort-asc::after  { content: ' ▲'; opacity: 1; color: var(-
 body.has-sidebar #app { margin-left: 64px; }
 #unibox-frame { position: fixed; top: 0; left: 64px; right: 0; bottom: 0; width: calc(100vw - 64px); height: 100vh; border: 0; z-index: 55; background: var(--bg); }
 td.pos { max-width: 260px; }
-.crumb { font-size: 11px; font-weight: 600; color: var(--accent); background: rgba(79,142,247,.10); border: 1px solid rgba(79,142,247,.28); border-radius: 6px; padding: 1px 7px; display: inline-block; line-height: 1.5; white-space: nowrap; }
+.crumb { font-size: 11px; font-weight: 600; color: var(--accent); background: var(--tint-blue); border: 1px solid var(--bd-blue); border-radius: 6px; padding: 1px 7px; display: inline-block; line-height: 1.5; white-space: nowrap; }
 /* Manage-pipeline modal */
 .pipe-tree { max-height: 46vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px 4px; margin: 10px 0; background: var(--bg); }
 .pipe-stage { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); padding: 8px 6px 3px; }
@@ -361,10 +408,10 @@ td.pos { max-width: 260px; }
 .pipe-add-row select { flex: 1; min-width: 0; background: var(--bg2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 13px; }
 td.st { max-width: 220px; }
 .st .chip { font-size: 9.5px; padding: 1px 7px; border-radius: 999px; font-weight: 700; }
-.st .chip.green  { background: rgba(63,185,80,.16);  color: var(--green); }
-.st .chip.blue   { background: rgba(79,142,247,.16); color: var(--blue); }
-.st .chip.orange { background: rgba(240,160,60,.16); color: var(--orange); }
-.st .chip.red    { background: rgba(248,81,73,.16);  color: var(--red); }
+.st .chip.green  { background: var(--tint-green);  color: var(--green); }
+.st .chip.blue   { background: var(--tint-blue); color: var(--blue); }
+.st .chip.orange { background: var(--tint-orange); color: var(--orange); }
+.st .chip.red    { background: var(--tint-red);  color: var(--red); }
 .st .stx { font-size: 9.5px; color: var(--muted); }
 .st .pocmini { display: block; font-size: 9px; color: var(--purple); margin-top: 1px; }
 td.act { text-align: center; max-width: 52px; }
@@ -399,10 +446,10 @@ td.act .close-btn:hover, td.act .fail-btn:hover { opacity: 1; filter: brightness
   font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600;
   border: 1px solid transparent; white-space: nowrap;
 }
-.badge.green  { background: rgba(63,185,80,.14);  color: var(--green);  border-color: rgba(63,185,80,.3); }
-.badge.blue   { background: rgba(79,142,247,.14); color: var(--blue);   border-color: rgba(79,142,247,.3); }
-.badge.orange { background: rgba(240,160,60,.14); color: var(--orange); border-color: rgba(240,160,60,.3); }
-.badge.red    { background: rgba(248,81,73,.14);  color: var(--red);    border-color: rgba(248,81,73,.3); }
+.badge.green  { background: var(--tint-green);  color: var(--green);  border-color: var(--bd-green); }
+.badge.blue   { background: var(--tint-blue); color: var(--blue);   border-color: var(--bd-blue); }
+.badge.orange { background: var(--tint-orange); color: var(--orange); border-color: var(--bd-orange); }
+.badge.red    { background: var(--tint-red);  color: var(--red);    border-color: var(--bd-red); }
 .badge.grey   { background: var(--bg3); color: var(--muted); border-color: var(--border); }
 .entry .view-convo { font-size: 12px; color: var(--accent); text-decoration: none; }
 .entry .view-convo:hover { text-decoration: underline; }
@@ -410,11 +457,11 @@ td.act .close-btn:hover, td.act .fail-btn:hover { opacity: 1; filter: brightness
 .entry .del, .entry .edit { background: none; border: 0; color: var(--muted); font-size: 15px; padding: 0 4px; }
 .entry .del:hover { color: var(--red); }
 .entry .edit:hover { color: var(--accent); }
-.badge.cat { background: rgba(163,113,247,.16); color: var(--purple); border-color: rgba(163,113,247,.35); }
+.badge.cat { background: var(--tint-purple); color: var(--purple); border-color: var(--bd-purple); }
 
 /* ── Modals ────────────────────────────────────────── */
 .modal-bg {
-  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  display: none; position: fixed; inset: 0; background: var(--scrim);
   z-index: 50; align-items: center; justify-content: center; padding: 20px;
 }
 .modal-bg.open { display: flex; }
@@ -440,7 +487,7 @@ td.act .close-btn:hover, td.act .fail-btn:hover { opacity: 1; filter: brightness
 .stat-tile.green .n { color: var(--green); }
 .stat-tile.blue .n { color: var(--accent); }
 .act-body { max-height: 52vh; overflow: auto; }
-.act-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.act-table { min-width: 100%; border-collapse: collapse; font-size: 13px; }
 .act-table th, .act-table td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .act-table th:first-child, .act-table td:first-child { text-align: left; position: sticky; left: 0; background: var(--bg2); }
 .act-table thead th { position: sticky; top: 0; background: var(--bg3); color: var(--muted); font-weight: 600; z-index: 1; }
@@ -453,7 +500,7 @@ td.act .close-btn:hover, td.act .fail-btn:hover { opacity: 1; filter: brightness
 
 /* ── funnel ────────────────────────────────────────── */
 .funnel-range { align-items: center; gap: 8px; margin: 12px 0; }
-.funnel-range input[type=date] { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; color-scheme: dark; outline: none; }
+.funnel-range input[type=date] { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; outline: none; }
 .funnel-wrap { display: grid; grid-template-columns: 1fr; gap: 18px; }
 .fsec-title { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin-bottom: 8px; }
 .frow { display: grid; grid-template-columns: 130px 1fr 100px; align-items: center; gap: 10px; margin-bottom: 6px; }
@@ -465,8 +512,8 @@ td.act .close-btn:hover, td.act .fail-btn:hover { opacity: 1; filter: brightness
 .fconv { font-size: 11px; color: var(--muted); text-align: right; }
 .fsub { display: flex; gap: 8px; align-items: center; margin: 2px 0 8px 140px; }
 .pchip { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; }
-.pchip.pos { background: rgba(63,185,80,.16); color: var(--green); }
-.pchip.neg { background: rgba(248,81,73,.16); color: var(--red); }
+.pchip.pos { background: var(--tint-green); color: var(--green); }
+.pchip.neg { background: var(--tint-red); color: var(--red); }
 .fsummary { margin-top: 10px; padding: 9px 12px; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--muted); }
 .fsummary b { color: var(--accent); }
 .funnel-table th, .funnel-table td { text-align: right; }
@@ -533,3 +580,121 @@ td.act .close-btn:hover, td.act .fail-btn:hover { opacity: 1; filter: brightness
 .cmsg-b { font-size: 12.5px; line-height: 1.4; word-break: break-word; white-space: pre-wrap; }
 #conv-body .muted { color: var(--muted); }
 #conv-body .small { font-size: 10px; }
+
+/* ── Right-hand tool rail ───────────────────────────
+   The header had eight buttons competing with the logo and the live pill.
+   They are the same buttons with the same ids — only their place in the DOM
+   changed — so every handler in app.js still binds to them.
+
+   Icons come from ::before via a per-button --rb-ic custom property rather
+   than a child <span>, because refreshCrm() writes button.textContent to
+   show sync progress; a child element would be wiped by that assignment. */
+#rightbar { display: none; }
+body.has-sidebar #rightbar {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 66px; z-index: 60;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 12px 0 10px; background: var(--bg2); border-left: 1px solid var(--border);
+  overflow-y: auto; overflow-x: hidden;
+}
+/* Unibox is a separate app in an iframe; CRM tools would do nothing there. */
+body.view-unibox #rightbar { display: none; }
+.rb-item {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  width: 60px; padding: 7px 1px; background: none; border: 1px solid transparent;
+  color: var(--muted); border-radius: 10px; cursor: pointer;
+  font-size: 9px; font-weight: 600; line-height: 1.2; text-align: center;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+.rb-item::before { content: var(--rb-ic, "•"); font-size: 17px; line-height: 1; }
+.rb-item:hover { color: var(--text); background: var(--bg3); }
+.rb-item:active { border-color: var(--border); }
+.rb-item:disabled { opacity: .45; cursor: default; }
+.rb-sep { width: 28px; height: 1px; background: var(--border); margin: 7px 0; flex: 0 0 auto; }
+.rb-spacer { flex: 1 1 auto; min-height: 4px; }
+#funnel-btn      { --rb-ic: "\1F4CA"; }
+#classify-btn    { --rb-ic: "\1F3F7"; }
+#pipe-btn        { --rb-ic: "\1F9ED"; }
+#activity-btn    { --rb-ic: "\1F4C8"; }
+#ig-btn          { --rb-ic: "\1F4F8"; }
+#refresh-crm-btn { --rb-ic: "\27F3"; }
+#master-btn      { --rb-ic: "\1F4C4"; }
+#team-btn        { --rb-ic: "\1F465"; }
+#theme-btn       { --rb-ic: "\1F319"; }
+:root[data-theme="dark"] #theme-btn { --rb-ic: "\2600"; }
+
+/* ── Surfaces ───────────────────────────────────────
+   The reference groups content into white cards on a grey page. Borders do
+   the separating in dark mode, soft shadows in light — both come from the
+   same tokens, so neither theme needs its own rules. */
+body.has-sidebar #app { margin-right: 66px; }
+body.has-sidebar.view-unibox #app { margin-right: 0; }
+header { box-shadow: var(--shadow); position: relative; z-index: 2; }
+.list-panel { padding: 0; }
+/* The panel is a flex column and these three are flex items, so in a short
+   window they were shrinking away — the tab bar collapsed to 7px and its
+   buttons to zero height. Only the grid should absorb leftover space. */
+.tab-bar, .list-head, .date-bar { flex: 0 0 auto; }
+.list-head, .date-bar { background: var(--bg2); }
+.stat-tile { box-shadow: var(--shadow); }
+.modal { box-shadow: var(--shadow-lg); }
+.login-card { box-shadow: var(--shadow-lg); }
+.toast { box-shadow: var(--shadow-lg); }
+/* The grid sits directly on the page in dark mode; on light it reads better
+   as a sheet, matching the reference table card. */
+#list { background: var(--bg2); }
+table.grid thead th { background: var(--bg3); }
+
+/* Unibox iframe has to clear the rail as well as the sidebar. */
+body.has-sidebar #unibox-frame { right: 0; width: calc(100vw - 64px); }
+
+/* ── Grid metadata: text, not pills ─────────────────
+   Matches the Unibox rows. The colour still carries the meaning; the pill
+   around it was chrome. Qualified with table.grid so the global
+   `table.grid td` rules do not outrank these. */
+table.grid .st .chip, table.grid .lblchip {
+  background: none; border: 0; padding: 0; border-radius: 0; font-weight: 600;
+}
+table.grid .st .chip.green  { color: var(--green); }
+table.grid .st .chip.blue   { color: var(--blue); }
+table.grid .st .chip.orange { color: var(--orange); }
+table.grid .st .chip.red    { color: var(--red); }
+table.grid .lblchip { color: var(--orange); }
+
+/* ── Tab line: tabs + search ────────────────────────
+   The search box sits up here with the tabs. Fixed width, matching the
+   Unibox: letting it take the slack made it stretch across half the window
+   on a wide monitor, which is far more than a handle ever needs. */
+.tab-row {
+  display: flex; align-items: flex-end; gap: 14px;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  padding: 6px 14px 0; flex: 0 0 auto;
+}
+.tab-row .tab-bar { border-bottom: 0; padding: 0; background: none; flex: 0 1 auto; min-width: 0; }
+/* No auto margin: the search box belongs next to the tabs, not pinned to the
+   far edge of the window where the eye has to travel to reach it. */
+.tab-tools { display: flex; align-items: center; gap: 10px; padding-bottom: 6px; flex: 0 1 auto; min-width: 0; }
+.tab-tools #search {
+  flex: 0 1 450px; width: 450px; max-width: 100%;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 14px; outline: none; font-size: 13px; color: var(--text);
+}
+.tab-tools #search:focus { border-color: var(--accent); }
+/* Add lead is the one action on this screen. It leads the filter row rather
+   than sitting inside the right-aligned group, and is sized to be the first
+   thing you find after the list title. */
+.list-head .add-lead-btn {
+  min-width: 240px; padding: 12px 24px; font-size: 15px; font-weight: 700;
+  border-radius: 9px; flex: 0 0 auto;
+}
+.list-controls .clear-btn { white-space: nowrap; }
+@media (max-width: 1100px) {
+  .tab-row { flex-wrap: wrap; }
+  .tab-tools { flex-basis: 100%; padding-bottom: 8px; }
+}
+
+/* Partner badge — a creator who has posted a video for us. Plain coloured
+   text like the rest of the row metadata, not another pill. */
+table.grid td.uname .ptag {
+  color: var(--green); font-weight: 700; font-size: 10px;
+  letter-spacing: .02em; margin-left: 6px; white-space: nowrap;
+}

@@ -2,6 +2,20 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
+
+/* ── theme ─────────────────────────────────────────────────
+   index.html applies the saved (or parent-supplied) theme before first
+   paint; this only handles the toggle. Presentation only. */
+function currentTheme() {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+function setTheme(t) {
+  if (t === 'dark') document.documentElement.dataset.theme = 'dark';
+  else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem('lg_theme', t); } catch (e) {}
+  // Tell the parent app when we are the pane being toggled, so the two match.
+  try { if (parent !== window) parent.postMessage({ type: 'lg-theme', theme: t }, '*'); } catch (e) {}
+}
 // Real buckets a lead can actually be in (what the backend computes).
 const REAL_BUCKETS = [
   ['first_reply', '✉️ 1st Reply'],
@@ -94,7 +108,7 @@ function daysBadge(lead) {
   if (d === null || d === undefined) return '';
   const nd = Math.round(d);
   const label = d < 1 ? 'today' : nd + (nd === 1 ? ' day' : ' days');
-  if (lead.bucket === 'first_reply' || lead.bucket === 'in_conversation') return `⏰ ${label} unanswered`;
+  if (lead.bucket === 'first_reply' || lead.bucket === 'in_conversation') return `${label} unanswered`;
   if (lead.bucket === 'followup_due') return `${label} since your reply`;
   if (lead.bucket === 'waiting') return `replied ${label} ago`;
   if (lead.bucket === 'snoozed') return `until ${new Date(lead.snoozed_until).toLocaleDateString()}`;
@@ -325,13 +339,13 @@ function statusChip(l) {
 
 function leadRow(l) {
   const status = statusChip(l);
-  const label = l.label ? `<span class="chip label-chip">🏷 ${esc(l.label)}</span>` : '';
-  const poc = l.poc ? `<span class="chip poc">👤 ${esc(l.poc)}</span>` : '';
+  const label = l.label ? `<span class="chip label-chip">${esc(l.label)}</span>` : '';
+  const poc = l.poc ? `<span class="chip poc">${esc(l.poc)}</span>` : '';
   const rate = l.quoted_usd != null
-    ? `<span class="chip rate" title="${escAttr(quoteLabel(l))}">💰 ${esc(quoteBadge(l))}</span>` : '';
+    ? `<span class="chip rate" title="${escAttr(quoteLabel(l))}">${esc(quoteBadge(l))}</span>` : '';
   const social = l.social_url
     ? `<a class="chip social" href="${escAttr(l.social_url)}" target="_blank"
-         rel="noopener" onclick="event.stopPropagation()">📸 ${esc(socialHandle(l.social_url))}</a>` : '';
+         rel="noopener" onclick="event.stopPropagation()">${esc(socialHandle(l.social_url))}</a>` : '';
   return `<div class="lead" data-key="${escAttr(l.key)}">
     <div class="who">
       <div class="name">${esc(l.first_name || l.email.split('@')[0])} ${status}</div>
@@ -1483,9 +1497,11 @@ async function init() {
   me = info.user;
   $('login-view').style.display = 'none';
   $('app').style.display = 'flex';
+  // Drives the rail's visibility and the page's right margin, in CSS.
+  document.body.classList.add('has-rail');
   $('who').textContent = me.display_name || me.username;
-  $('team-btn').style.display = me.is_admin ? 'inline-block' : 'none';
-  $('activity-btn').style.display = me.is_admin ? 'inline-block' : 'none';
+  $('team-btn').style.display = me.is_admin ? '' : 'none';
+  $('activity-btn').style.display = me.is_admin ? '' : 'none';
   $('ws-manage').style.display = me.is_admin ? 'inline-block' : 'none';
 
   try { team = (await api('/api/team')).team; } catch (e) { team = []; }
@@ -1565,6 +1581,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('export-btn').onclick = exportCsv;
   $('stats-btn').onclick = openStats;
+  $('theme-btn').onclick = () => setTheme(currentTheme() === 'dark' ? 'light' : 'dark');
   $('stats-close').onclick = () => { $('stats-bg').style.display = 'none'; };
   $('activity-btn').onclick = openActivity;
   $('activity-close').onclick = () => { $('activity-bg').style.display = 'none'; };

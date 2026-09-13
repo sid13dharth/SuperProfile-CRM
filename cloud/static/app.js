@@ -1,5 +1,38 @@
 'use strict';
 
+/* ── theme ─────────────────────────────────────────────────
+   The saved theme is applied by an inline script in index.html before first
+   paint; this only handles the toggle. Presentation only — nothing here
+   touches data. Storage is wrapped because it throws in some privacy modes,
+   where the theme simply does not persist between visits. */
+function currentTheme() {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+function setTheme(t) {
+  if (t === 'dark') document.documentElement.dataset.theme = 'dark';
+  else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem('lg_theme', t); } catch (e) {}
+  // Unibox renders in an iframe on this page; tell it so the two panes match.
+  const uf = $('unibox-frame');
+  try { if (uf && uf.contentWindow) uf.contentWindow.postMessage({ type: 'lg-theme', theme: t }, '*'); } catch (e) {}
+}
+
+// The Unibox pane has its own switch; a toggle there should move this page too.
+addEventListener('message', e => {
+  const d = e && e.data;
+  if (!d || d.type !== 'lg-theme' || (d.theme !== 'dark' && d.theme !== 'light')) return;
+  if (d.theme === 'dark') document.documentElement.dataset.theme = 'dark';
+  else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem('lg_theme', d.theme); } catch (e2) {}
+});
+
+/* The iframe needs the theme on its very first paint, before any message can
+   reach it — otherwise it flashes light inside a dark page. */
+function uniboxSrc(deep) {
+  const base = '/unibox/' + (deep || '');
+  return base + (base.includes('?') ? '&' : '?') + 'theme=' + currentTheme();
+}
+
 /* ── tiny helpers ──────────────────────────────────────────── */
 const $ = id => document.getElementById(id);
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
@@ -113,7 +146,7 @@ function showApp() {
   // and authed via the shared lg_session before the first switch — no flash,
   // no perceived second login. switchView only toggles its visibility after.
   const uf = $('unibox-frame');
-  if (uf && !uf.getAttribute('src')) uf.setAttribute('src', '/unibox/');
+  if (uf && !uf.getAttribute('src')) uf.setAttribute('src', uniboxSrc(''));
 }
 
 /* ── pipeline classification tree ──────────────────────────── */
@@ -848,7 +881,13 @@ function cellDisplay(e, c) {
   if (c.f === 'status') { const l = statusLabel(e.status); return l ? `<span class="crumb">${esc(l)}</span>` : '<span class="ph">— set —</span>'; }
   if (c.f === 'label') return e.label ? `<span class="crumb">${esc(e.label)}</span>` : '<span class="ph">— set —</span>';
   if (c.e === 'delivery' || c.e === 'reason') { const l = subNodeLabel(e.position); return l ? `<span class="crumb">${esc(l)}</span>` : '<span class="ph">— set —</span>'; }
-  if (c.uname) return '@' + esc(e.handle);
+  if (c.uname) {
+    // Someone who has already made a video for us is a different kind of
+    // contact from a cold lead, and that is worth seeing without opening
+    // anything. Sits in the username cell rather than costing a column.
+    const tag = e.partner ? ' <span class="ptag" title="Has posted a video for us">\u2605 Partner</span>' : '';
+    return '@' + esc(e.handle) + tag;
+  }
   if (c.ig) return igCell(e, c);
   if (c.f === 'date') { const d = fmtDay(e.created_at); return d ? esc(d) : ph; }
   if (c.e === 'date') { const v = cellValue(e, c); return v ? esc(fmtDMY(v)) : ph; }
@@ -1345,8 +1384,9 @@ async function igBackfill(scope) {
 function switchView(view, deepLink) {
   const frame = $('unibox-frame');
   document.querySelectorAll('#sidebar .sb-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  document.body.classList.toggle('view-unibox', view === 'unibox');
   if (view === 'unibox') {
-    const target = '/unibox/' + (deepLink ? deepLink : '');
+    const target = uniboxSrc(deepLink || '');
     // (Re)point the frame if it's not loaded, or a specific lead was requested.
     if (!frame.getAttribute('src')) frame.setAttribute('src', target);
     else if (deepLink) frame.setAttribute('src', target);
@@ -1373,7 +1413,7 @@ function renderTabs() {
    screen first, and the intent has to survive that instead of being dropped. */
 const deepLink = (() => {
   const q = new URLSearchParams(location.search);
-  for (const kind of ['lead', 'email', 'add']) {
+  for (const kind of ['lead', 'email', 'add', 'videos']) {
     const v = (q.get(kind) || '').trim().toLowerCase().replace(/^@+/, '');
     if (v) return { kind, handle: v };
   }
@@ -1384,6 +1424,16 @@ async function runDeepLink() {
   const { kind, handle } = deepLink;
   // One-shot: drop the query string so a refresh doesn't reopen the modal.
   history.replaceState({}, '', location.pathname);
+
+  /* Straight to this creator's posts. The Videos tab filters client-side on
+     its own search box, and handle is one of the fields it matches, so
+     seeding it is all that is needed — and it stays visible, so it is obvious
+     why the list is short and how to clear it. */
+  if (kind === 'videos') {
+    $('video-search').value = handle;
+    await switchTab('videos');
+    return;
+  }
 
   if (kind === 'add') {
     await switchTab('leads');
@@ -1414,6 +1464,11 @@ function switchTab(k) {
   renderTabs();
   const isVideos = k === 'videos';
   $('lead-controls').style.display = isVideos ? 'none' : '';
+  // Search and Add lead live on the tab line now, but they are still lead
+  // controls — Videos has its own search and its own add button.
+  $('tab-tools').style.display = isVideos ? 'none' : '';
+  // It left #lead-controls, so it no longer hides with that group.
+  $('open-add-btn').style.display = isVideos ? 'none' : '';
   $('video-controls').style.display = isVideos ? '' : 'none';
   const db = document.querySelector('.date-bar'); if (db) db.style.display = isVideos ? 'none' : '';
   const t = TABS.find(x => x.k === k);
@@ -1489,11 +1544,21 @@ async function saveFail() {
 }
 
 /* ── videos view ───────────────────────────────────────────── */
+/* Order follows the export: who posted it, then the post and its numbers.
+   The collaboration fields we fill in ourselves (country, budget, referral…)
+   keep their place after those, so nothing that was editable stops being so.
+   'Type' is the Instagram format from the export; 'Video type' below is our
+   own categorisation — different questions, so both are shown. */
 const VIDEO_COLS = [
-  { f: 'handle', h: 'Lead', leadlink: true, cls: 'uname' },
-  { f: 'lead_name', h: 'Lead name', e: 'text' },
+  { f: 'handle', h: 'Username', leadlink: true, cls: 'uname' },
+  { f: 'lead_name', h: 'First name', e: 'text' },
   { f: 'url', h: 'Video URL', e: 'text', cls: 'lnk' },
-  { f: 'date_posted', h: 'Date posted', e: 'date', cls: 'dt' },
+  { f: 'views', h: 'Views', e: 'text', cls: 'ig' },
+  { f: 'comments', h: 'Comments', e: 'text', cls: 'ig' },
+  { f: 'likes', h: 'Likes', e: 'text', cls: 'ig' },
+  { f: 'date_posted', h: 'Date', e: 'date', cls: 'dt' },
+  { f: 'post_type', h: 'Type', e: 'text' },
+  { f: 'post_status', h: 'Status', e: 'text' },
   { f: 'country', h: 'Country', e: 'country' },
   { f: 'language', h: 'Language', e: 'text' },
   { f: 'video_type', h: 'Video type', e: 'video_type' },
@@ -1530,7 +1595,7 @@ function renderVideos() {
   const sc = list.scrollTop, sl = list.scrollLeft;
   const q = ($('video-search').value || '').trim().toLowerCase();
   let vids = state.videos;
-  if (q) vids = vids.filter(v => `${v.handle} ${v.lead_name || ''} ${v.country} ${v.video_type} ${v.language} ${v.url} ${v.referral || ''} ${v.saas || ''}`.toLowerCase().includes(q));
+  if (q) vids = vids.filter(v => `${v.handle} ${v.lead_name || ''} ${v.country} ${v.video_type} ${v.language} ${v.url} ${v.referral || ''} ${v.saas || ''} ${v.post_type || ''} ${v.post_status || ''}`.toLowerCase().includes(q));
   $('entry-count').textContent = vids.length ? `(${vids.length})` : '';
   if (!vids.length) { list.innerHTML = '<div class="empty">No videos yet. Click ＋ Add video.</div>'; return; }
   const head = '<thead><tr>' + VIDEO_COLS.map(c => `<th class="${c.cls || ''}">${esc(c.h)}</th>`).join('') + '<th class="act"></th></tr></thead>';
@@ -1767,6 +1832,24 @@ const HANDLE_COLS = ['username', 'handle', 'instagram', 'insta', 'ig', 'profile'
 const EMAIL_COLS = ['email', 'e-mail', 'mail'];
 const NAME_COLS = ['first_name', 'firstname', 'first name', 'name', 'fname'];
 const CAT_COLS = ['category', 'categories', 'type', 'segment', 'niche'];
+const DATE_COLS = ['date', 'date added', 'date_added', 'added', 'added on', 'found', 'date found', 'created', 'created at'];
+
+/* Sheets date leads two ways: 'DD/MM/YYYY' (our Instantly sheet) and
+   'YYYY-MM-DD' (the exports). Returns YYYY-MM-DD, or '' if it is neither —
+   the server falls back to the upload time only when this is blank.
+   Day-first is not a guess: 7,593 rows in the Instantly sheet have a first
+   field above 12 and not one row has a second field above 12. */
+function normSheetDate(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return m[0];
+  m = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+  if (!m) return '';
+  const d = +m[1], mo = +m[2];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+  return m[3] + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+}
 const OWNER_COLS = ['lead owner', 'lead_owner', 'owner', 'poc', 'assigned to', 'assigned'];
 const NOTE_COLS = ['notes', 'note', 'comment', 'comments'];
 
@@ -1781,11 +1864,12 @@ function extractMaster(text) {
   const header = rows[0].map(h => h.trim().toLowerCase());
   const looksHeader = header.some(h => HANDLE_COLS.includes(h) || EMAIL_COLS.includes(h));
   const find = list => header.findIndex(h => list.includes(h));
-  let hIdx = -1, eIdx = -1, nIdx = -1, cIdx = -1, oIdx = -1, noIdx = -1, body = rows;
+  let hIdx = -1, eIdx = -1, nIdx = -1, cIdx = -1, oIdx = -1, noIdx = -1, dIdx = -1, body = rows;
   if (looksHeader) {
     body = rows.slice(1);
     hIdx = find(HANDLE_COLS); eIdx = find(EMAIL_COLS);
     nIdx = find(NAME_COLS); cIdx = find(CAT_COLS); oIdx = find(OWNER_COLS); noIdx = find(NOTE_COLS);
+    dIdx = find(DATE_COLS);
     // Prefer an explicit instagram/username/handle column over a generic url.
     const pref = header.findIndex(h => ['username', 'handle', 'instagram', 'insta', 'ig'].includes(h));
     if (pref >= 0) hIdx = pref;
@@ -1806,6 +1890,7 @@ function extractMaster(text) {
       category: cell(r, cIdx),
       lead_owner: cell(r, oIdx),
       notes: cell(r, noIdx),
+      date: normSheetDate(cell(r, dIdx)),
     });
   }
   return {
@@ -1815,6 +1900,7 @@ function extractMaster(text) {
     ownerCol: oIdx >= 0 ? header[oIdx] : '',
     nameCol: nIdx >= 0 ? header[nIdx] : '',
     catCol: cIdx >= 0 ? header[cIdx] : '',
+    dateCol: dIdx >= 0 ? header[dIdx] : '',
   };
 }
 function handleFile(file) {
@@ -1830,6 +1916,7 @@ function handleFile(file) {
       (res.ownerCol ? ` · owner: <b>${esc(res.ownerCol)}</b>` : ' · <span style="color:var(--orange)">no owner column</span>') +
       (res.nameCol ? ` · name: <b>${esc(res.nameCol)}</b>` : '') +
       (res.catCol ? ` · category: <b>${esc(res.catCol)}</b>` : '') +
+      (res.dateCol ? ` · date: <b>${esc(res.dateCol)}</b>` : ' · <span style="color:var(--orange)">no date column — today&rsquo;s date will be used</span>') +
       `<br><span class="foot-hint">e.g. ${res.rows.slice(0, 3).map(r => esc(r.handle)).join(', ')}…</span>`;
     $('master-mode-row').style.display = 'flex';
     $('master-import').disabled = false;
@@ -1997,14 +2084,19 @@ function renderActivity(s) {
   const memTot = {};
   s.members.forEach(m => memTot[m] = { leads: 0, with_email: 0 });
   for (const r of s.by_member_day) { memTot[r.owner].leads += r.leads; memTot[r.owner].with_email += r.with_email; }
+  // Now that the master sheet feeds this, a wide range can list twenty-odd
+  // people. Busiest first so the ones that matter are visible before the
+  // table has to be scrolled sideways; alphabetical settles ties.
+  const members = s.members.slice().sort((x, y) =>
+    (memTot[y].leads - memTot[x].leads) || x.localeCompare(y));
 
   const cell = (o) => o && o.leads ? `${o.leads}<span class="we"> / ${o.with_email}</span>` : '<span class="we">–</span>';
-  const head = `<tr><th>Day (IST)</th>${s.members.map(m => `<th>${esc(m)}</th>`).join('')}<th class="total-col">Total</th></tr>`;
+  const head = `<tr><th>Day (IST)</th>${members.map(m => `<th>${esc(m)}</th>`).join('')}<th class="total-col">Total</th></tr>`;
   const rows = s.by_day.map(d => {
-    const cells = s.members.map(m => `<td>${cell(md[d.day + '|' + m])}</td>`).join('');
+    const cells = members.map(m => `<td>${cell(md[d.day + '|' + m])}</td>`).join('');
     return `<tr><td>${esc(d.day || '(no date)')}</td>${cells}<td class="total-col">${d.leads}<span class="we"> / ${d.with_email}</span></td></tr>`;
   }).join('');
-  const totalRow = `<tr class="total-row"><td>All</td>${s.members.map(m =>
+  const totalRow = `<tr class="total-row"><td>All</td>${members.map(m =>
     `<td>${memTot[m].leads}<span class="we"> / ${memTot[m].with_email}</span></td>`).join('')}` +
     `<td class="total-col">${s.totals.leads}<span class="we"> / ${s.totals.with_email}</span></td></tr>`;
   $('activity-body').innerHTML =
@@ -2115,6 +2207,16 @@ function wire() {
 
   const relist = debounce(loadEntries, 250);
   $('search').addEventListener('input', relist);
+  /* Reset everything that narrows the list — the selects, the search box and
+     the date range — then reload. The tab (stage) is not a filter here: it is
+     which list you are looking at, so it deliberately stays put. */
+  $('clear-filters').onclick = () => {
+    ['search', 'status-filter', 'label-filter', 'delivery-filter', 'reason-filter',
+     'cat-filter', 'owner-filter', 'manager-filter', 'link-filter',
+     'date-from', 'date-to'].forEach(id => { const e = $(id); if (e) e.value = ''; });
+    markPreset('all');
+    loadEntries();
+  };
   $('owner-filter').onchange = loadEntries;
   if ($('link-filter')) $('link-filter').onchange = loadEntries;
   $('cat-filter').onchange = loadEntries;
@@ -2189,6 +2291,7 @@ function wire() {
 
   // Activity
   $('activity-btn').onclick = openActivity;
+  $('theme-btn').onclick = () => setTheme(currentTheme() === 'dark' ? 'light' : 'dark');
   $('activity-close').onclick = () => $('activity-bg').classList.remove('open');
   // Activity modal's own date controls (independent of the leads-page filter).
   $('act-from').onchange = runActivity;
