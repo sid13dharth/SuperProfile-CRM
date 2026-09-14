@@ -318,6 +318,9 @@ th.ig { text-align: right; }
    columns are never sized for an empty cell. */
 td.ig, th.ig { min-width: 66px; }
 td.igdate, th.igdate { min-width: 104px; max-width: 130px; }
+/* Sized for the "Last enriched" header rather than its values — "340d ago"
+   is narrower than the label above it. */
+td.igago, th.igago { min-width: 96px; max-width: 120px; }
 /* Bio + link-in-bio. Pinned like Notes so they cannot be sized to the header
    on tabs whose sample happened to hold no enriched lead. Must be qualified
    with table.grid to outrank the global `table.grid td` max-width. */

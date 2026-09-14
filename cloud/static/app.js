@@ -792,6 +792,7 @@ const CORE_COLS = [
   { f: 'ig_avg_views_10', h: 'Avg Views (10)',   ig: 'num',  cls: 'ig', sortable: true },
   { f: 'ig_bio',          h: 'Bio',              ig: 'text', cls: 'igbio' },
   { f: 'ig_link',         h: 'Link in bio',      ig: 'link', cls: 'iglink' },
+  { f: 'ig_checked_at',   h: 'Last enriched',    ig: 'ago',  cls: 'ig igago', sortable: true },
 ];
 // Extra columns per tab (appended to CORE).
 const TAB_EXTRA = {
@@ -852,6 +853,7 @@ function igCell(e, c) {
       : e.ig_status === 'notfound' ? 'Handle not found on Instagram'
       : e.ig_status === 'error' ? 'Fetch failed — try refreshing'
       : c.f === 'ig_avg_views_10' ? 'No reels found'
+      : c.f === 'ig_checked_at' ? 'Never enriched'
       : 'No data';
     return '<span class="ph" title="' + esc(why) + '">—</span>';
   }
@@ -864,6 +866,15 @@ function igCell(e, c) {
     // the real URL. Not opened from the grid by accident — needs a click.
     const shown = String(v).replace(/^https?:\/\//i, '').replace(/^www\./i, '');
     return '<a class="igv iglink-a" href="' + esc(v) + '" target="_blank" rel="noopener" title="' + esc(v) + '">' + esc(shown) + '</a>';
+  }
+  if (c.ig === 'ago') {
+    const d = new Date(v); if (isNaN(d)) return ph;
+    const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+    const label = days <= 0 ? 'today' : days === 1 ? '1d ago' : days + 'd ago';
+    // Same 90-day threshold as Last Post: past that, followers and view
+    // counts have usually moved enough to be worth re-fetching.
+    const cls = days > 90 ? ' stale' : '';
+    return '<span class="igv' + cls + '" title="Enriched ' + esc(fmtDMY(d.toISOString().slice(0, 10))) + '">' + esc(label) + '</span>';
   }
   if (c.ig === 'date') {
     const d = new Date(v); if (isNaN(d)) return ph;
