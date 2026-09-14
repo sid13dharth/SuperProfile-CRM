@@ -87,8 +87,8 @@
         <select id="delivery-filter" title="Filter by delivery status" style="display:none"><option value="">Any delivery status</option></select>
         <select id="reason-filter" title="Filter by reason for failure" style="display:none"><option value="">Any reason</option></select>
         <select id="cat-filter"><option value="">Any category</option></select>
-        <select id="owner-filter"><option value="">Any owner</option></select>
-        <select id="manager-filter" title="Filter by the CRM teammate accountable for the lead"><option value="">Any lead manager</option></select>
+        <select id="owner-filter" title="Filter by who sourced the lead"><option value="">Added by: anyone</option></select>
+        <select id="manager-filter" title="Filter by the CRM teammate who owns the lead"><option value="">Lead owner: anyone</option></select>
         <select id="link-filter" title="Filter by the platform in their Instagram bio link"><option value="">Any link in bio</option></select>
         <button class="hbtn clear-btn" id="clear-filters" title="Reset every filter, the search box and the date range">Clear all filters</button>
       </div>
@@ -121,7 +121,7 @@
 <div id="add-bg" class="modal-bg">
   <div class="modal">
     <h3>Add a lead</h3>
-    <div class="owner-note">Lead owner: <b id="owner-name">—</b> <span class="foot-hint">(you — auto-filled)</span></div>
+    <div class="owner-note">Added by: <b id="owner-name">—</b> <span class="foot-hint">(you — auto-filled)</span></div>
     <label class="fld">First name <span class="opt">(optional)</span>
       <input id="f-firstname" placeholder="e.g. Angelika" autocomplete="off">
     </label>
@@ -183,7 +183,7 @@
     <h3>Bulk add leads</h3>
     <div class="foot-hint">Paste rows (one lead per line: <code>handle, email</code> — or a full Instagram URL),
       or drop a CSV/TSV. With a header row, <code>first_name</code>/<code>name</code> and <code>notes</code> columns
-      are picked up too. Every row runs the same username dedup + CRM prior-conversation check. Lead owner =
+      are picked up too. Every row runs the same username dedup + CRM prior-conversation check. Added by =
       <b id="bulk-owner">you</b>. Max 500 rows.</div>
     <textarea id="bulk-text" placeholder="handle, email&#10;theirhandle, lead@example.com&#10;instagram.com/anotherhandle, other@example.com&#10;@thirdhandle"></textarea>
     <div class="row" style="margin-top:8px">
@@ -205,8 +205,8 @@
     <h3>Edit lead</h3>
     <div class="foot-hint" id="edit-sub">Any teammate can edit any lead.</div>
     <input type="hidden" id="e-id">
-    <label class="fld">Lead owner <span class="opt">(this platform)</span>
-      <input id="e-owner" placeholder="who owns this lead" autocomplete="off">
+    <label class="fld">Added by <span class="opt">(this platform)</span>
+      <input id="e-owner" placeholder="who sourced this lead" autocomplete="off">
     </label>
     <div class="fld">CRM POC <span class="opt">(from the CRM — read-only)</span>
       <div id="e-crm-poc" class="readonly-val">—</div>

@@ -501,7 +501,7 @@ async function openConvModal(e) {
   row('Status', en.status ? esc(en.status) : '');
   row('Label', en.label ? esc(en.label) : '');
   row('POC', (en.crm && en.crm.poc) ? esc(en.crm.poc) : '');
-  row('Lead owner', en.lead_owner ? esc(en.lead_owner) : '');
+  row('Added by', en.lead_owner ? esc(en.lead_owner) : '');
   row('Category', en.category ? esc(en.category) : '');
   row('Quoted rate', (dl.final_rate || dl.initial_rate) ? esc(dl.final_rate || dl.initial_rate) : '');
   row('Deliverables', dl.deliverables ? esc(dl.deliverables) : '');
@@ -710,14 +710,15 @@ async function refreshLinkFilter() {
   sel.value = cur;
 }
 
-// Managers are always CRM users, so this list comes from the team, not from
-// whatever owner strings happen to be in the data.
+// A Lead Owner is always a CRM teammate, so this list comes from the team
+// rather than from whatever names happen to be in the data. (The field is
+// still lead_manager in the database and API — this is a label change only.)
 function refreshManagerFilter() {
   const sel = $('manager-filter'); if (!sel) return;
   const cur = sel.value;
   const team = (state.team || []).slice().sort((a, b) => a.localeCompare(b));
-  sel.innerHTML = '<option value="">Any lead manager</option>'
-    + '<option value="__none__">— No manager —</option>'
+  sel.innerHTML = '<option value="">Lead owner: anyone</option>'
+    + '<option value="__none__">— No lead owner —</option>'
     + team.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
   sel.value = cur;
 }
@@ -728,7 +729,7 @@ function refreshOwnerFilter() {
   const owners = (state.owners && state.owners.length)
     ? state.owners
     : [...new Set(state.entries.map(e => e.lead_owner).filter(Boolean))].sort();
-  sel.innerHTML = '<option value="">Any owner</option>' + owners.map(o => `<option>${esc(o)}</option>`).join('');
+  sel.innerHTML = '<option value="">Added by: anyone</option>' + owners.map(o => `<option>${esc(o)}</option>`).join('');
   sel.value = cur;
 }
 
@@ -775,9 +776,9 @@ const CORE_COLS = [
   { f: 'social_url', h: 'Username',   e: 'text', cls: 'uname', uname: true },
   { h: 'Primary Social Profile', link: true, cls: 'lnk' },
   { f: 'email',      h: 'Email',      e: 'text' },
-  { f: 'lead_owner', h: 'Lead Owner', e: 'owner' },
+  { f: 'lead_owner', h: 'Added by', e: 'owner' },
   // Manager is a CRM teammate; owner often is not one, so the two are separate.
-  { f: 'lead_manager', h: 'Lead Manager', e: 'manager' },
+  { f: 'lead_manager', h: 'Lead Owner', e: 'manager' },
   { f: 'category',   h: 'Category',   e: 'category', cls: 'cat' },
   { f: 'stage',      h: 'Stage',      e: 'stage', cls: 'stg' },
   { f: 'status',     h: 'Status',     e: 'status', cls: 'stt' },

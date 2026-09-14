@@ -92,8 +92,10 @@ function render(handle, d) {
     + `<span class="spcrm-stage spcrm-s-${esc((d.stage || 'none').toLowerCase())}">${esc(d.stage || 'No stage')}</span></div>`);
   if (crumb) parts.push(`<div class="spcrm-crumb">${crumb}</div>`);
   if (d.label) parts.push(row('Label', esc(d.label)));
-  if (d.lead_owner) parts.push(row('Owner', esc(d.lead_owner)));
-  if (d.poc && d.poc !== d.lead_owner) parts.push(row('POC', esc(d.poc)));
+  // Same two names the CRM grid uses: who sourced it, and the teammate who
+  // owns it. Kept in that order so the panel reads like the row does.
+  if (d.lead_owner) parts.push(row('Added by', esc(d.lead_owner)));
+  if (d.lead_manager) parts.push(row('Lead Owner', esc(d.lead_manager)));
   if (d.email) parts.push(row('Email', esc(d.email)));
   if (d.category) parts.push(row('Category', esc(d.category)));
   if (d.contacted && d.last_contact_at) parts.push(row('Contacted', fmtDate(d.last_contact_at)));

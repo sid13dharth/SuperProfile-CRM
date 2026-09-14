@@ -1339,7 +1339,7 @@ async function handleApi(request, env, url) {
       stage: e.stage, breadcrumb: crumb, position: row.position || '',
       status: e.status || '', label: e.label || '',
       first_name: e.first_name || '', email: e.email || '', category: e.category || '',
-      lead_owner: e.lead_owner || '', poc: (e.crm && e.crm.poc) || '',
+      lead_owner: e.lead_owner || '', lead_manager: e.lead_manager || '', poc: (e.crm && e.crm.poc) || '',
       contacted, replied,
       last_contact_at: sentAt || (e.crm && e.crm.last_contact_at) || '',
       last_reply_at: gotAt || (e.crm && e.crm.last_reply_at) || '',
