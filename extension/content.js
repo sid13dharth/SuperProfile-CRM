@@ -66,7 +66,9 @@ function render(handle, d) {
 
   if (d && d.error) {
     el.classList.add('spcrm-warn');
-    const msg = d.error === 'no_key' ? 'Log in to the CRM in this browser (or add the team key via the extension icon).'
+    const msg = d.error === 'timeout' ? 'The extension\u2019s background worker did not respond. Reload the extension at chrome://extensions, then reload this page.'
+      : d.error === 'worker' ? 'Background worker error: ' + (d.detail || 'unknown')
+      : d.error === 'no_key' ? 'Log in to the CRM in this browser (or add the team key via the extension icon).'
       : d.error === 'bad_key' ? 'The API key was rejected. Check it in the extension options.'
       : d.error === 'network' ? 'Could not reach the CRM.'
       : 'Lookup failed' + (d.detail ? ` — ${esc(d.detail)}` : '');
@@ -209,8 +211,15 @@ async function update() {
   el.querySelector('.spcrm-body').innerHTML = `<div class="spcrm-msg">Checking <b>@${esc(handle)}</b>…</div>`;
 
   let d;
-  try { d = await chrome.runtime.sendMessage({ type: 'lookup', handle }); }
-  catch (e) { d = { error: 'network', detail: 'extension reloaded — refresh the page' }; }
+  /* Race the worker against a timer. If the service worker dies mid-request
+     the reply channel can stay open with nothing on the other end, and the
+     panel would sit on "Checking…" with no way to tell something broke. */
+  try {
+    d = await Promise.race([
+      chrome.runtime.sendMessage({ type: 'lookup', handle }),
+      new Promise(r => setTimeout(() => r({ error: 'timeout' }), 10000)),
+    ]);
+  } catch (e) { d = { error: 'network', detail: 'extension reloaded — refresh the page' }; }
   // The user may have navigated on while we waited.
   if (handleFromPath() !== handle) return;
   render(handle, d);

@@ -32,8 +32,13 @@ async function authHeaders() {
   return { base, headers: null };
 }
 
+/* chrome.storage.sync throws when sync is disabled for the profile or the
+   quota is unhappy. That used to reject all the way out of lookup(), which
+   left the panel waiting forever. Defaults are fine here — the base URL has
+   one, and no key just means 'use my session'. */
 async function settings() {
-  const s = await chrome.storage.sync.get(['base', 'key']);
+  let s = {};
+  try { s = await chrome.storage.sync.get(['base', 'key']) || {}; } catch (e) { s = {}; }
   return { base: (s.base || DEFAULT_BASE).replace(/\/+$/, ''), key: s.key || '' };
 }
 
@@ -81,13 +86,17 @@ async function setEmail(handle, email) {
   return v;
 }
 
+/* Returning true holds the reply channel open, so EVERY path has to answer —
+   a rejected promise here is a panel that hangs rather than an error the user
+   can act on. Hence the .catch on both. */
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  const fail = e => sendResponse({ error: 'worker', detail: String((e && e.message) || e) });
   if (msg && msg.type === 'lookup' && msg.handle) {
-    lookup(msg.handle).then(sendResponse);
+    lookup(msg.handle).then(sendResponse, fail);
     return true;               // keep the channel open for the async reply
   }
   if (msg && msg.type === 'setEmail' && msg.handle) {
-    setEmail(msg.handle, msg.email).then(sendResponse);
+    setEmail(msg.handle, msg.email).then(sendResponse, fail);
     return true;
   }
 });
