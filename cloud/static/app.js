@@ -1977,13 +1977,27 @@ function parseBulk(text) {
     const pref = header.findIndex(h => ['username', 'handle', 'instagram', 'insta', 'ig'].includes(h));
     if (pref >= 0) hIdx = pref;
   }
+  /* "contains an @" is not enough to call something an email — @megwilde has
+     one. Require a dot-bearing domain after it. */
+  const isEmail = c => /^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(String(c || '').trim());
+  const isHandleish = c => /instagram\.com/i.test(c) || /^@[A-Za-z0-9._]+$/.test(String(c || '').trim());
+
   const out = [];
   for (const r of body) {
-    let social = hIdx >= 0 ? r[hIdx] : (r.find(c => /instagram\.com/i.test(c)) || r.find(c => c && !/@/.test(c)) || r[0] || '');
-    let email = eIdx >= 0 ? (r[eIdx] || '') : (r.find(c => /@/.test(c) && !/instagram/i.test(c)) || '');
+    const cells = r.map(c => String(c || '').trim());
+    let social = hIdx >= 0 ? cells[hIdx] : (cells.find(isHandleish) || cells.find(c => c && !isEmail(c)) || cells[0] || '');
+    let email = eIdx >= 0 ? (cells[eIdx] || '') : (cells.find(isEmail) || '');
     social = (social || '').trim(); email = (email || '').trim();
     const row = { social_url: social, email };
     if (nIdx >= 0 && r[nIdx]) row.first_name = r[nIdx].trim();
+    /* No header, but the row gave up a real email AND a handle — then the one
+       cell left over is the name. Narrow on purpose: only when both of the
+       other two were positively identified, so a "handle, notes" paste is
+       never mistaken for a name. */
+    if (!row.first_name && hIdx < 0 && email && social && cells.length >= 3) {
+      const leftover = cells.filter(c => c && c !== social && c !== email && !isEmail(c) && !isHandleish(c));
+      if (leftover.length === 1) row.first_name = leftover[0];
+    }
     if (noteIdx >= 0 && r[noteIdx]) row.notes = r[noteIdx].trim();
     if (cIdx >= 0 && r[cIdx]) row.category = r[cIdx].trim();
     if (social) out.push(row);

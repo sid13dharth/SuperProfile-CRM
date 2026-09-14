@@ -181,11 +181,12 @@
 <div id="bulk-bg" class="modal-bg">
   <div class="modal wide">
     <h3>Bulk add leads</h3>
-    <div class="foot-hint">Paste rows (one lead per line: <code>handle, email</code> — or a full Instagram URL),
-      or drop a CSV/TSV. With a header row, <code>first_name</code>/<code>name</code> and <code>notes</code> columns
-      are picked up too. Every row runs the same username dedup + CRM prior-conversation check. Added by =
-      <b id="bulk-owner">you</b>. Max 500 rows.</div>
-    <textarea id="bulk-text" placeholder="handle, email&#10;theirhandle, lead@example.com&#10;instagram.com/anotherhandle, other@example.com&#10;@thirdhandle"></textarea>
+    <div class="foot-hint"><b>Include a header row</b> and every column is picked up —
+      <code>username</code>, <code>first name</code>, <code>email</code>, <code>category</code>, <code>notes</code>, in any order.
+      Without one, names are only detected when the row also has a real email address.
+      Paste rows or drop a CSV/TSV. Every row runs the same username dedup + CRM prior-conversation check.
+      Added by = <b id="bulk-owner">you</b>. Max 500 rows.</div>
+    <textarea id="bulk-text" placeholder="username, first name, email&#10;@theirhandle, Meg, lead@example.com&#10;instagram.com/anotherhandle, Diana, other@example.com&#10;@thirdhandle"></textarea>
     <div class="row" style="margin-top:8px">
       <button class="note-btn" id="bulk-file-btn">Choose CSV/TSV…</button>
       <input type="file" id="bulk-file" accept=".csv,.tsv,.txt" hidden>
