@@ -221,9 +221,10 @@ function globCI(term) {
    is lowercased here, leaving it literal and the pattern at exactly two
    classes however long the phrase.
 
-   Consequence: SQL lower() folds ASCII only, so a bio written CAFÉ is not
-   found by "café" — 55 of 22,189 bios. Fixing that needs a stored,
-   JS-lowercased column; not worth a migration for 0.25%. */
+   The column it matches is ig_bio_lc — folded once in JavaScript, which is
+   Unicode-aware, when the bio is fetched. SQL lower() would fold only ASCII
+   and 21,604 of 22,189 bios carry non-ASCII, so "café" would not have found
+   a bio written CAFÉ. See migrate_v15. */
 const BIO_NB = '[^a-z0-9]';
 const bioLit = s => [...s].map(c => (c === '*' || c === '?' || c === '[' || c === ']') ? '[' + c + ']' : c).join('');
 function bioTermGlob(t) {
@@ -1231,14 +1232,18 @@ async function handleApi(request, env, url) {
     let sql = 'SELECT * FROM entries WHERE 1=1';
     const args = [];
     const owner = p.get('owner') || '';
-    if (owner) { sql += ' AND lead_owner = ?'; args.push(owner); }
+    /* Every exact-match filter folds case. It costs the index on these
+       columns, but a scan of 24k rows is ~20-40ms here and a filter that
+       silently misses "smm" because the value reads "SMM" is worse. These
+       columns hold no non-ASCII, so lower() is a complete fix for them. */
+    if (owner) { sql += ' AND lower(lead_owner) = ?'; args.push(owner.toLowerCase()); }
     const ctry = (p.get('country') || '').trim();
     // __none__ finds the leads still missing one, which is the useful query
     // while coverage is partial.
     if (ctry === '__none__') sql += " AND country = ''";
-    else if (ctry) { sql += ' AND country = ?'; args.push(ctry); }
+    else if (ctry) { sql += ' AND lower(country) = ?'; args.push(ctry.toLowerCase()); }
     const cat = p.get('category') || '';
-    if (cat) { sql += ' AND category = ?'; args.push(cat); }
+    if (cat) { sql += ' AND lower(category) = ?'; args.push(cat.toLowerCase()); }
     const stg = p.get('stage') || '';
     if (stg) { sql += ' AND stage = ?'; args.push(stg); }
     if (stg === 'Leads') sql += " AND email_norm != ''";
@@ -1274,18 +1279,18 @@ async function handleApi(request, env, url) {
     const linkDom = (p.get('link_domain') || '').trim().toLowerCase();
     if (linkDom === '__none__') sql += " AND ig_link_domain = ''";
     else if (linkDom === '__any__') sql += " AND ig_link_domain != ''";
-    else if (linkDom) { sql += ' AND ig_link_domain = ?'; args.push(linkDom); }
+    else if (linkDom) { sql += ' AND lower(ig_link_domain) = ?'; args.push(linkDom.toLowerCase()); }
     // Lead manager filter. '__none__' finds leads with nobody accountable —
     // which is the useful query, since an owner who is not a CRM user gets none.
     const mgr = (p.get('manager') || '').trim();
     if (mgr === '__none__') sql += " AND lead_manager = ''";
-    else if (mgr) { sql += ' AND lead_manager = ?'; args.push(mgr); }
+    else if (mgr) { sql += ' AND lower(lead_manager) = ?'; args.push(mgr.toLowerCase()); }
     // Bio search. See bioWhere for the query language.
     const bioRaw = (p.get('bio') || '').trim();
     if (bioRaw) {
       // Padded so a word at the very start or end of a bio still has a
       // boundary on both sides.
-      const bw = bioWhere(bioRaw, "(' ' || lower(ig_bio) || ' ')");
+      const bw = bioWhere(bioRaw, "(' ' || ig_bio_lc || ' ')");
       if (bw.sql) { sql += ' AND (' + bw.sql + ')'; args.push(...bw.params); }
     }
     /* Demonstrably active: posted in the last 30 days. A blank date fails this
@@ -1864,15 +1869,15 @@ async function handleApi(request, env, url) {
     const catF = p.get('category') || '';
     // Conversations whose lead has no category drop out, like every other
     // filter here.
-    if (catF) { sql += ' AND ' + CAT_PICK + ' = ?'; args.push(catF); }
+    if (catF) { sql += ' AND lower(' + CAT_PICK + ') = ?'; args.push(catF.toLowerCase()); }
     const campaign = p.get('campaign') || '';
     if (campaign) { const ids = campaign.split(',').filter(Boolean); sql += ` AND campaign_id IN (${ids.map(() => '?').join(',')})`; args.push(...ids); }
     const poc = p.get('poc') || '';
-    if (poc === 'unassigned') sql += " AND poc=''"; else if (poc) { sql += ' AND poc=?'; args.push(poc); }
+    if (poc === 'unassigned') sql += " AND poc=''"; else if (poc) { sql += ' AND lower(poc)=?'; args.push(poc.toLowerCase()); }
     const statusF = p.get('status') || '';
-    if (statusF === 'none') sql += " AND status=''"; else if (statusF) { sql += ' AND status=?'; args.push(statusF); }
+    if (statusF === 'none') sql += " AND status=''"; else if (statusF) { sql += ' AND lower(status)=?'; args.push(statusF.toLowerCase()); }
     const labelF = p.get('label') || '';
-    if (labelF === 'none') sql += " AND label=''"; else if (labelF) { sql += ' AND label=?'; args.push(labelF); }
+    if (labelF === 'none') sql += " AND label=''"; else if (labelF) { sql += ' AND lower(label)=?'; args.push(labelF.toLowerCase()); }
     const q = p.get('q') || '';
     if (q) {
       sql += ' AND (c.email GLOB ? OR c.first_name GLOB ? OR c.subject GLOB ?)';

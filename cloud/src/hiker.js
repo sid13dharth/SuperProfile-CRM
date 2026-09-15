@@ -223,10 +223,14 @@ export async function fetchIgStats(env, handle, knownUserId) {
 export function igUpdateStmt(env, id, patch) {
   return env.DB.prepare(
     `UPDATE entries SET ig_user_id=?, ig_followers=?, ig_last_post_at=?, ig_avg_views_10=?,
-       ig_reels_used=?, ig_checked_at=?, ig_status=?, ig_bio=?, ig_link=?, ig_link_domain=? WHERE id=?`)
+       ig_reels_used=?, ig_checked_at=?, ig_status=?, ig_bio=?, ig_bio_lc=?, ig_link=?, ig_link_domain=? WHERE id=?`)
     .bind(patch.ig_user_id, patch.ig_followers, patch.ig_last_post_at, patch.ig_avg_views_10,
           patch.ig_reels_used, patch.ig_checked_at, patch.ig_status,
-          patch.ig_bio || '', patch.ig_link || '', patch.ig_link_domain || '', id);
+          patch.ig_bio || '',
+          // Folded here, not in SQL: JavaScript handles non-ASCII, SQLite
+          // lower() does not, and bio search matches this column.
+          (patch.ig_bio || '').toLowerCase(),
+          patch.ig_link || '', patch.ig_link_domain || '', id);
 }
 
 /* Enrich a set of rows [{id, handle_norm, ig_user_id}] with bounded

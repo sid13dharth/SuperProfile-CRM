@@ -1,0 +1,19 @@
+-- v15 — a folded copy of the bio, so bio search is case-insensitive for real.
+--
+-- SQLite's lower() folds ASCII only: lower('CAFÉ') is 'cafÉ'. 21,604 of the
+-- 22,189 bios we hold contain non-ASCII characters, so matching against
+-- lower(ig_bio) left a genuine gap — "café" would not find a bio written CAFÉ.
+--
+-- The obvious alternative, per-character case classes ([cC][aA][fF]…), cannot
+-- be used here: whole-word matching needs a negated boundary class on each
+-- side, and SQLite rejects GLOB patterns carrying too many negated ranges —
+-- the combination trips "pattern too complex" at about seven letters, so
+-- searching "freelance" would fail outright.
+--
+-- So the fold happens once, in JavaScript, which is Unicode-aware, and is
+-- stored. Search then matches a literal lowercased term against a lowercased
+-- column: no case classes, two boundary classes, any phrase length.
+--
+-- hiker.js writes this alongside ig_bio on every enrichment, so it cannot
+-- drift; the backfill below is only for the rows already enriched.
+ALTER TABLE entries ADD COLUMN ig_bio_lc TEXT NOT NULL DEFAULT '';
