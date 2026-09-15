@@ -205,7 +205,12 @@ function fillCategorySelects() {
   }
   const cf = $('cat-filter'); if (cf) {
     const cur = cf.value;
-    cf.innerHTML = '<option value="">Any category</option>' + state.categories.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    /* The curated list says what you can ASSIGN; the filter has to reach what
+       is actually stored, or categories that predate the list (Beauty &
+       Fashion, 1,541 leads) would be unfilterable. Union of both. */
+    const all = [...new Set([...(state.categories || []), ...(state.categoriesInUse || [])])]
+      .sort((x, y) => x.localeCompare(y));
+    cf.innerHTML = '<option value="">Any category</option>' + all.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
     cf.value = cur;
   }
 }
@@ -223,12 +228,16 @@ async function addCat() {
   const name = $('cat-new').value.trim();
   const msg = $('cat-msg'); msg.className = 'add-msg'; msg.textContent = '';
   if (!name) return;
-  try { await api('/api/categories', { method: 'POST', body: { name } }); $('cat-new').value = ''; await loadCategories(); renderCatList(); }
+  try { await api('/api/categories', { method: 'POST', body: { name } }); $('cat-new').value = ''; await loadCategories(); renderCatList(); renderCatListIn('cl-cat-list'); }
   catch (e) { msg.className = 'add-msg err'; msg.textContent = e.message; }
 }
 async function deleteCat(name) {
-  try { await api('/api/categories', { method: 'DELETE', body: { name } }); await loadCategories(); renderCatList(); }
-  catch (e) { toast(e.message); }
+  try {
+    await api('/api/categories', { method: 'DELETE', body: { name } });
+    await loadCategories();
+    renderCatList();
+    renderCatListIn('cl-cat-list');
+  } catch (e) { toast(e.message); }
 }
 
 /* ── manage statuses & labels (add / delete, anyone) ───────────── */
@@ -253,7 +262,18 @@ function renderClassifyLists() {
     : '<div class="foot-hint">No labels yet.</div>';
   $('cl-status-list').querySelectorAll('button[data-skey]').forEach(b => { b.onclick = () => deleteStatus(b.dataset.skey); });
   $('cl-label-list').querySelectorAll('button[data-lname]').forEach(b => { b.onclick = () => deleteLabel(b.dataset.lname); });
+  renderCatListIn('cl-cat-list');
   renderNodeLists();
+}
+
+/* The Categories list appears in two places — the Manage modal and the small
+   gear beside the Category dropdown — so the rendering is shared. */
+function renderCatListIn(id) {
+  const el = $(id); if (!el) return;
+  el.innerHTML = (state.categories || []).length
+    ? state.categories.map(c => `<div class="cat-item"><span>${esc(c)}</span><button data-cat="${esc(c)}" title="Delete">\u{1F5D1}</button></div>`).join('')
+    : '<div class="foot-hint">No categories yet.</div>';
+  el.querySelectorAll('button[data-cat]').forEach(b => { b.onclick = () => deleteCat(b.dataset.cat); });
 }
 // Delivery statuses (Closed) + Failure reasons (Failed) are pipeline sub-nodes.
 function renderNodeLists() {
@@ -613,6 +633,10 @@ async function loadEntries() {
   state.filteredTotal = data.filtered_total != null ? data.filtered_total : data.grand_total;
   applySort();
   renderEntries();
+  // Categories present in the data, so the filter can reach values that predate
+  // the curated list (Beauty & Fashion is on 1,541 leads but not on the list).
+  state.categoriesInUse = data.categories_in_use || [];
+  fillCategorySelects();
   refreshOwnerFilter();
   refreshManagerFilter();
   refreshClassifyFilters();
@@ -2286,6 +2310,16 @@ function wire() {
 
   // Categories management
   $('cat-manage-btn').onclick = openCat;
+  $('cl-cat-add').onclick = async () => {
+    const name = $('cl-cat-new').value.trim(); if (!name) return;
+    const msg = $('cl-msg'); msg.className = 'add-msg'; msg.textContent = '';
+    try {
+      await api('/api/categories', { method: 'POST', body: { name } });
+      $('cl-cat-new').value = '';
+      await loadCategories();
+      renderCatListIn('cl-cat-list');
+    } catch (e) { msg.className = 'add-msg err'; msg.textContent = e.message; }
+  };
   $('e-cat-manage-btn').onclick = openCat;
   $('cat-add').onclick = addCat;
   $('cat-new').addEventListener('keydown', e => { if (e.key === 'Enter') addCat(); });

@@ -564,6 +564,7 @@ function convDict(row, campaignNames) {
     last_msg_at: row.last_msg_at, first_reply_at: row.first_reply_at, msg_count: row.msg_count,
     status: row.status, status_source: row.status_source, label: row.label,
     snoozed_until: row.snoozed_until, social_url: row.social_url, lead_owner: row.lead_owner, poc: row.poc,
+    lead_category: row.lead_category || '',
     deal_videos: row.deal_videos, deal_budget: row.deal_budget, deal_deliverables: row.deal_deliverables,
     fail_reason: row.fail_reason, fail_notes: row.fail_notes,
     rate_their_initial: row.rate_their_initial, rate_their_final: row.rate_their_final,
@@ -1208,9 +1209,13 @@ async function handleApi(request, env, url) {
     // page. Still bounded so a pathological caller can't ask for unbounded rows.
     const limit = Math.min(parseInt(p.get('limit') || '1000', 10) || 1000, 100000);
     sql += ' LIMIT ' + limit;
-    const [{ results }, ownersRes, statusRes, labelRes, totalRes, filteredRes] = await Promise.all([
+    const [{ results }, ownersRes, catRes, statusRes, labelRes, totalRes, filteredRes] = await Promise.all([
       env.DB.prepare(sql).bind(...args).all(),
       env.DB.prepare("SELECT DISTINCT lead_owner FROM entries WHERE lead_owner != '' ORDER BY lead_owner").all(),
+      // What the data actually holds. The curated categories table is only 4
+      // rows while 37 values are in use, so a filter built from that list
+      // alone cannot reach most leads.
+      env.DB.prepare("SELECT DISTINCT category FROM entries WHERE category != '' ORDER BY category").all(),
       // Status dropdown = the editable statuses vocabulary ({key,label}).
       env.DB.prepare('SELECT key, label FROM statuses ORDER BY sort, label').all(),
       // Label dropdown = the editable crm_labels vocabulary (seeded from the
@@ -1227,6 +1232,7 @@ async function handleApi(request, env, url) {
     return json({
       entries: results.map(r => ({ ...entryDict(r, crmUrl), partner: partners.has(r.handle_norm) })),
       owners: ownersRes.results.map(o => o.lead_owner),
+      categories_in_use: catRes.results.map(o => o.category),
       // {key,label} pairs — the grid shows label, filters/saves by key.
       statuses: statusRes.results.map(o => ({ key: o.key, label: o.label })),
       labels: labelRes.results.map(o => o.name),
@@ -1737,8 +1743,26 @@ async function handleApi(request, env, url) {
     await requireUser(env, request);
     const p = url.searchParams;
     const ws = Number(p.get('ws') || 1) || 1;
-    let sql = 'SELECT * FROM conversations WHERE ws=?';
+    /* The lead's category lives on entries, matched by email. A scalar
+       subquery rather than a JOIN: entries holds junk "emails" from the old
+       sheets ("dm" on 56 rows, "dmed" on 50), so joining duplicated a
+       conversation once per matching row — 5,973 rows for 5,539 conversations
+       when measured.
+
+       ORDER BY makes the pick deterministic, and the SAME expression drives
+       both the displayed value and the filter. 153 addresses sit on several
+       leads with different categories (shared agency inboxes such as
+       talent@pontefirm.com), so without that a row could show one category
+       while having matched another, and the filter would look broken. */
+    const CAT_PICK = "(SELECT e.category FROM entries e WHERE e.email_norm = c.email"
+      + " AND e.category != '' ORDER BY e.id LIMIT 1)";
+    let sql = 'SELECT c.*, COALESCE(' + CAT_PICK + ", '') AS lead_category"
+      + ' FROM conversations c WHERE c.ws=?';
     const args = [ws];
+    const catF = p.get('category') || '';
+    // Conversations whose lead has no category drop out, like every other
+    // filter here.
+    if (catF) { sql += ' AND ' + CAT_PICK + ' = ?'; args.push(catF); }
     const campaign = p.get('campaign') || '';
     if (campaign) { const ids = campaign.split(',').filter(Boolean); sql += ` AND campaign_id IN (${ids.map(() => '?').join(',')})`; args.push(...ids); }
     const poc = p.get('poc') || '';
@@ -1751,12 +1775,17 @@ async function handleApi(request, env, url) {
     if (q) { sql += ' AND (email LIKE ? OR first_name LIKE ? OR subject LIKE ?)'; const like = `%${q}%`; args.push(like, like, like); }
     if (p.get('date_from')) { sql += ' AND last_lead_msg_at >= ?'; args.push(p.get('date_from')); }
     if (p.get('date_to')) { sql += ' AND last_lead_msg_at <= ?'; args.push(p.get('date_to') + 'T23:59:59.999Z'); }
-    const [convRes, campRes, countRes, statusRes, labelRes] = await env.DB.batch([
+    const [convRes, campRes, countRes, statusRes, labelRes, catListRes] = await env.DB.batch([
       env.DB.prepare(sql).bind(...args),
       env.DB.prepare('SELECT id, name FROM campaigns WHERE ws=?').bind(ws),
       env.DB.prepare('SELECT campaign_id, COUNT(*) c FROM conversations WHERE ws=? GROUP BY campaign_id').bind(ws),
       env.DB.prepare('SELECT key, label, form, terminal, builtin, sort FROM statuses ORDER BY sort, label'),
       env.DB.prepare('SELECT name, builtin, sort FROM crm_labels ORDER BY sort, name'),
+      // Categories present on leads that actually have a conversation — the
+      // only ones worth offering in this filter.
+      env.DB.prepare("SELECT DISTINCT e.category AS category FROM conversations c"
+        + " JOIN entries e ON e.email_norm = c.email"
+        + " WHERE c.ws=? AND e.category != '' ORDER BY e.category").bind(ws),
     ]);
     const campaignNames = Object.fromEntries(campRes.results.map(r => [r.id, r.name]));
     const leads = convRes.results.map(r => convDict(r, campaignNames));
@@ -1772,6 +1801,7 @@ async function handleApi(request, env, url) {
       .sort((a, b) => b.leads - a.leads || a.name.localeCompare(b.name));
     return json({
       leads, counts, campaigns: campaignList, statuses: statusRes.results, labels: labelRes.results,
+      categories: catListRes.results.map(r => r.category),
       status_counts: statusCounts, label_counts: labelCounts,
       last_sync: await metaGet(env, `last_sync:${ws}`, '') || await metaGet(env, 'last_sync', ''),
       version: parseInt(await metaGet(env, 'version', '0'), 10), followup_due_days: FOLLOWUP_DUE_DAYS,

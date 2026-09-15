@@ -152,6 +152,8 @@ function filterParams() {
   if ($('poc-filter').value) p.set('poc', $('poc-filter').value);
   if ($('status-filter').value) p.set('status', $('status-filter').value);
   if ($('label-filter').value) p.set('label', $('label-filter').value);
+  const cf = $('cat-filter');
+  if (cf && cf.value) p.set('category', cf.value);
   if ($('search').value.trim()) p.set('q', $('search').value.trim());
   if ($('date-from').value) p.set('date_from', $('date-from').value);
   if ($('date-to').value) p.set('date_to', $('date-to').value);
@@ -247,6 +249,17 @@ function renderStatusLabelFilters() {
   lf.innerHTML = '<option value="">Label: any</option><option value="none">Label: none</option>' +
     state.labels.map(l => `<option value="${escAttr(l.name)}">Label: ${esc(l.name)}</option>`).join('');
   lf.value = curL;
+
+  /* Categories come from the CRM side and are listed by what actually
+     appears on leads with a conversation — offering the curated list here
+     would hide most of them, since that list holds 4 of the 37 in use. */
+  const cf = $('cat-filter');
+  if (cf) {
+    const curC = cf.value;
+    cf.innerHTML = '<option value="">Category: any</option>' +
+      (state.categories || []).map(c => `<option value="${escAttr(c)}">Category: ${esc(c)}</option>`).join('');
+    cf.value = curC;
+  }
 }
 
 function renderTabs() {
@@ -353,6 +366,7 @@ function leadRow(l) {
     </div>
     <div class="preview">${esc(l.preview)}</div>
     ${label}${social}${poc}${rate}
+    ${l.lead_category ? `<span class="chip cat" title="Category in the CRM">${esc(l.lead_category)}</span>` : ''}
     <span class="chip camp" title="${escAttr(l.campaign_name)}">${esc(l.campaign_name)}</span>
     <span class="badge b-${l.bucket}">${daysBadge(l)}</span>
   </div>`;
@@ -1534,7 +1548,7 @@ function openLeadByEmail(email) {
 document.addEventListener('DOMContentLoaded', () => {
   $('login-btn').onclick = submitLogin;
   $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
-  ['date-from', 'date-to', 'poc-filter', 'status-filter', 'label-filter'].forEach(id => $(id).onchange = refresh);
+  ['date-from', 'date-to', 'poc-filter', 'status-filter', 'label-filter', 'cat-filter'].forEach(id => { const e = $(id); if (e) e.onchange = refresh; });
   $('sort-order').onchange = () => { sortOrder = $('sort-order').value; renderList(); };
   document.querySelectorAll('.nav-item').forEach(b => b.onclick = () => switchView(b.dataset.view));
   $('analytics-refresh').onclick = loadAnalytics;
@@ -1546,7 +1560,7 @@ document.addEventListener('DOMContentLoaded', () => {
   $('ws-close').onclick = () => { $('ws-bg').style.display = 'none'; };
   $('clear-filters').onclick = () => {
     selectedCampaigns.clear();
-    ['poc-filter', 'status-filter', 'label-filter', 'search', 'date-from', 'date-to'].forEach(id => { $(id).value = ''; });
+    ['poc-filter', 'status-filter', 'label-filter', 'cat-filter', 'search', 'date-from', 'date-to'].forEach(id => { const e = $(id); if (e) e.value = ''; });
     rateFilter = '';
     sortOrder = 'newest';
     $('sort-order').value = 'newest';

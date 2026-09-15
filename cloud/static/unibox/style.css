@@ -563,3 +563,7 @@ header { box-shadow: var(--shadow); position: relative; z-index: 2; }
 .fbreak { flex-basis: 100%; height: 0; margin: 0; }
 #filters #sort-order { flex: 0 0 auto; }
 #filters #clear-filters { flex: 0 0 auto; }
+
+/* Lead category, resolved from the CRM. Plain text like the other row
+   metadata — purple, so it is distinct from the grey campaign beside it. */
+.lead .chip.cat { color: var(--purple); font-weight: 600; max-width: 130px; }

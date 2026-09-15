@@ -30,7 +30,7 @@
      so nothing in app.js has to show it. -->
 <nav id="rightbar">
   <button class="rb-item" id="funnel-btn" title="Funnel analytics — where leads leak">Funnel</button>
-  <button class="rb-item" id="classify-btn" title="Add or remove statuses &amp; labels">Statuses</button>
+  <button class="rb-item" id="classify-btn" title="Add or remove statuses, labels and categories">Manage</button>
   <button class="rb-item" id="pipe-btn" title="Manage the pipeline stages &amp; labels">Pipeline</button>
   <button class="rb-item" id="activity-btn" title="Per-member daily activity">Activity</button>
   <button class="rb-item" id="ig-btn" title="Fetch followers / last post / avg reel views from Instagram">IG data</button>
@@ -268,7 +268,14 @@
   <div class="modal">
     <h3>Statuses &amp; Labels</h3>
     <div class="foot-hint">Shared across the team. These fill the Status and Label dropdowns everywhere. Deleting one clears it from any lead currently using it.</div>
-    <h4 style="margin:14px 0 6px">Statuses</h4>
+    <h4>Categories</h4>
+<div class="foot-hint">Shared across the team. Deleting one only takes it off the dropdown — leads keep the text they already have.</div>
+<div id="cl-cat-list" style="margin:8px 0"></div>
+<div class="row" style="margin-bottom:14px">
+  <input id="cl-cat-new" placeholder="New category name" style="flex:1">
+  <button class="note-btn" id="cl-cat-add">Add</button>
+</div>
+<h4 style="margin:14px 0 6px">Statuses</h4>
     <div id="cl-status-list"></div>
     <div class="row">
       <input id="cl-status-new" placeholder="New status name" style="flex:1">
