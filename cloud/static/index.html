@@ -90,7 +90,13 @@
         <select id="owner-filter" title="Filter by who sourced the lead"><option value="">Added by: anyone</option></select>
         <select id="manager-filter" title="Filter by the CRM teammate who owns the lead"><option value="">Lead owner: anyone</option></select>
         <select id="link-filter" title="Filter by the platform in their Instagram bio link"><option value="">Any link in bio</option></select>
+        <input id="bio-search" class="bio-box" placeholder="Bio keywords: UGC, teach…" title="Find leads whose Instagram bio mentions these words">
+        <select id="bio-mode" class="bio-mode" title="Match any keyword, or require all of them">
+          <option value="any">any</option>
+          <option value="all">all</option>
+        </select>
         <button class="hbtn clear-btn" id="clear-filters" title="Reset every filter, the search box and the date range">Clear all filters</button>
+        <button class="hbtn" id="export-csv" title="Download every lead matching the current filters">⬇ Export CSV</button>
       </div>
       <div class="list-controls" id="video-controls" style="display:none">
         <input id="video-search" placeholder="Search videos (lead, country, type…)">
@@ -109,6 +115,7 @@
         <button class="chip" data-range="30">Last 30d</button>
         <button class="chip" data-range="all">All</button>
       </div>
+      <button class="chip act30" id="active30" title="Only leads who posted on Instagram in the last 30 days. Private accounts and handles we could not fetch are excluded — they cannot be shown to be active.">Posted in 30d</button>
       <span class="date-summary" id="date-summary"></span>
     </div>
     <div id="list"><div class="empty">Loading…</div></div>

@@ -606,6 +606,9 @@ function filterParams() {
   if (state.tab === 'closed') { const dv = $('delivery-filter') ? $('delivery-filter').value : ''; if (dv) p.set('position', dv); }
   if (state.tab === 'failed') { const rv = $('reason-filter') ? $('reason-filter').value : ''; if (rv) p.set('position', rv); }
   if (state.tab && state.tab !== 'all' && state.tab !== 'videos') p.set('tab', state.tab);
+  const bio = $('bio-search') ? $('bio-search').value.trim() : '';
+  if (bio) { p.set('bio', bio); p.set('bio_mode', $('bio-mode') ? $('bio-mode').value : 'any'); }
+  if ($('active30') && $('active30').classList.contains('active')) p.set('active30', '1');
   const from = $('date-from').value; if (from) p.set('from', from);
   const to = $('date-to').value; if (to) p.set('to', to);
   return p;
@@ -2068,6 +2071,47 @@ function renderBulkReport(res) {
   box.innerHTML = summary + rows;
 }
 
+/* ── CSV export ─────────────────────────────────────────────
+   Every lead the current filters select, not just the page on screen — the
+   grid already holds the full filtered set (loadEntries asks for limit
+   100000), so this is a formatting job, not another round trip.
+   Columns follow the tab, so the file matches what you were looking at. */
+function csvCell(v) {
+  const s = v === null || v === undefined ? '' : String(v);
+  // Quote when the value could otherwise break the row, and double any quote.
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function exportCsv() {
+  const rows = state.entries || [];
+  if (!rows.length) { toast('Nothing to export — no leads match these filters.'); return; }
+  const cols = activeCols();
+  const head = cols.map(c => csvCell(c.h)).join(',');
+  const body = rows.map(e => cols.map(c => {
+    // The raw value, not the cell HTML: a spreadsheet wants the number and
+    // the ISO date, not "12.3K" or a link.
+    // The Primary Social Profile column carries no `f` — it renders from
+    // social_url directly — so without this it exported as an empty column.
+    if (c.link) return csvCell(e.social_url || '');
+    if (c.uname) return csvCell(e.handle || '');
+    if (c.status) return csvCell([e.crm && e.crm.replied ? 'replied' : '', e.crm && e.crm.contacted ? 'contacted' : ''].filter(Boolean).join(' ') || 'new');
+    if (c.f === 'date') return csvCell(istYmd(e.created_at));
+    if (c.deal) return csvCell((e.deal && e.deal[c.f]) || '');
+    if (c.f === 'status') return csvCell(statusLabel(e.status) || '');
+    return csvCell(c.f ? (e[c.f] == null ? '' : e[c.f]) : '');
+  }).join(','));
+  // The BOM makes Excel read it as UTF-8; without it, accented names and
+  // emoji in bios come out mangled.
+  const csv = '\uFEFF' + [head, ...body].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `leads-${state.tab}-${istDateStr(0)}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`Exported ${rows.length.toLocaleString()} lead${rows.length === 1 ? '' : 's'}`);
+}
+
 /* ── date presets (IST) ────────────────────────────────────── */
 function istDateStr(daysBack) {
   return new Date(Date.now() + 330 * 60000 - (daysBack || 0) * 86400000).toISOString().slice(0, 10);
@@ -2259,14 +2303,20 @@ function wire() {
      the date range — then reload. The tab (stage) is not a filter here: it is
      which list you are looking at, so it deliberately stays put. */
   $('clear-filters').onclick = () => {
-    ['search', 'status-filter', 'label-filter', 'delivery-filter', 'reason-filter',
+    ['search', 'bio-search', 'status-filter', 'label-filter', 'delivery-filter', 'reason-filter',
      'cat-filter', 'owner-filter', 'manager-filter', 'link-filter',
      'date-from', 'date-to'].forEach(id => { const e = $(id); if (e) e.value = ''; });
     markPreset('all');
+    if ($('bio-mode')) $('bio-mode').value = 'any';
+    if ($('active30')) $('active30').classList.remove('active');
     loadEntries();
   };
   $('owner-filter').onchange = loadEntries;
   if ($('link-filter')) $('link-filter').onchange = loadEntries;
+  $('bio-search').addEventListener('input', debounce(loadEntries, 350));
+  $('bio-mode').onchange = () => { if ($('bio-search').value.trim()) loadEntries(); };
+  $('active30').onclick = () => { $('active30').classList.toggle('active'); loadEntries(); };
+  $('export-csv').onclick = exportCsv;
   $('cat-filter').onchange = e => {
     if (e.target.value === '__add__') {
       e.target.value = '';      // never a real filter value

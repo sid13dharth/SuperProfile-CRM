@@ -701,3 +701,9 @@ table.grid td.uname .ptag {
   color: var(--green); font-weight: 700; font-size: 10px;
   letter-spacing: .02em; margin-left: 6px; white-space: nowrap;
 }
+
+/* Bio keyword search + its any/all toggle, and the activity chip. */
+.list-controls .bio-box { min-width: 210px; }
+.list-controls .bio-mode { max-width: 74px; }
+.date-bar .chip.act30 { margin-left: 4px; }
+.date-bar .chip.act30.active { border-color: var(--green); color: var(--green); }

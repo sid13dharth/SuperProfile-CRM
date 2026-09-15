@@ -1188,6 +1188,26 @@ async function handleApi(request, env, url) {
     const mgr = (p.get('manager') || '').trim();
     if (mgr === '__none__') sql += " AND lead_manager = ''";
     else if (mgr) { sql += ' AND lead_manager = ?'; args.push(mgr); }
+    /* Bio keyword search. Split on commas and whitespace; ANY matches a bio
+       containing at least one word, ALL requires every one. LIKE wildcards in
+       the user's own text are escaped, otherwise a stray % matches everything
+       and an underscore silently matches any character. */
+    const bioRaw = (p.get('bio') || '').trim();
+    if (bioRaw) {
+      const words = bioRaw.split(/[,\s]+/).map(s => s.trim()).filter(Boolean).slice(0, 10);
+      if (words.length) {
+        const joiner = (p.get('bio_mode') || 'any').toLowerCase() === 'all' ? ' AND ' : ' OR ';
+        const esc = s => s.toLowerCase().replace(/[\\%_]/g, c => '\\' + c);
+        // SQLite takes string literals verbatim — no backslash escapes — so the
+        // ESCAPE clause needs exactly one backslash character between quotes.
+        sql += ' AND (' + words.map(() => "lower(ig_bio) LIKE ? ESCAPE '\\'").join(joiner) + ')';
+        for (const word of words) args.push('%' + esc(word) + '%');
+      }
+    }
+    /* Demonstrably active: posted in the last 30 days. A blank date fails this
+       comparison, which is intended — 2,893 leads are private, gone, or have
+       no posts, and none of those can be shown to be active. */
+    if ((p.get('active30') || '') === '1') sql += " AND ig_last_post_at >= date('now','-30 day')";
     const signal = p.get('signal') || '';
     if (signal === 'prior') sql += ' AND crm_replied = 1';
     else if (signal === 'contacted') sql += " AND email_norm != '' AND crm_replied = 0";
