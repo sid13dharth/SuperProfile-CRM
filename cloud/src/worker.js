@@ -1209,13 +1209,9 @@ async function handleApi(request, env, url) {
     // page. Still bounded so a pathological caller can't ask for unbounded rows.
     const limit = Math.min(parseInt(p.get('limit') || '1000', 10) || 1000, 100000);
     sql += ' LIMIT ' + limit;
-    const [{ results }, ownersRes, catRes, statusRes, labelRes, totalRes, filteredRes] = await Promise.all([
+    const [{ results }, ownersRes, statusRes, labelRes, totalRes, filteredRes] = await Promise.all([
       env.DB.prepare(sql).bind(...args).all(),
       env.DB.prepare("SELECT DISTINCT lead_owner FROM entries WHERE lead_owner != '' ORDER BY lead_owner").all(),
-      // What the data actually holds. The curated categories table is only 4
-      // rows while 37 values are in use, so a filter built from that list
-      // alone cannot reach most leads.
-      env.DB.prepare("SELECT DISTINCT category FROM entries WHERE category != '' ORDER BY category").all(),
       // Status dropdown = the editable statuses vocabulary ({key,label}).
       env.DB.prepare('SELECT key, label FROM statuses ORDER BY sort, label').all(),
       // Label dropdown = the editable crm_labels vocabulary (seeded from the
@@ -1232,7 +1228,6 @@ async function handleApi(request, env, url) {
     return json({
       entries: results.map(r => ({ ...entryDict(r, crmUrl), partner: partners.has(r.handle_norm) })),
       owners: ownersRes.results.map(o => o.lead_owner),
-      categories_in_use: catRes.results.map(o => o.category),
       // {key,label} pairs — the grid shows label, filters/saves by key.
       statuses: statusRes.results.map(o => ({ key: o.key, label: o.label })),
       labels: labelRes.results.map(o => o.name),
@@ -1781,11 +1776,9 @@ async function handleApi(request, env, url) {
       env.DB.prepare('SELECT campaign_id, COUNT(*) c FROM conversations WHERE ws=? GROUP BY campaign_id').bind(ws),
       env.DB.prepare('SELECT key, label, form, terminal, builtin, sort FROM statuses ORDER BY sort, label'),
       env.DB.prepare('SELECT name, builtin, sort FROM crm_labels ORDER BY sort, name'),
-      // Categories present on leads that actually have a conversation — the
-      // only ones worth offering in this filter.
-      env.DB.prepare("SELECT DISTINCT e.category AS category FROM conversations c"
-        + " JOIN entries e ON e.email_norm = c.email"
-        + " WHERE c.ws=? AND e.category != '' ORDER BY e.category").bind(ws),
+      // The same curated list the CRM offers, so the two agree on what a
+      // category is. Managed in the CRM under Manage > Categories.
+      env.DB.prepare('SELECT name AS category FROM categories ORDER BY sort, name'),
     ]);
     const campaignNames = Object.fromEntries(campRes.results.map(r => [r.id, r.name]));
     const leads = convRes.results.map(r => convDict(r, campaignNames));

@@ -205,12 +205,13 @@ function fillCategorySelects() {
   }
   const cf = $('cat-filter'); if (cf) {
     const cur = cf.value;
-    /* The curated list says what you can ASSIGN; the filter has to reach what
-       is actually stored, or categories that predate the list (Beauty &
-       Fashion, 1,541 leads) would be unfilterable. Union of both. */
-    const all = [...new Set([...(state.categories || []), ...(state.categoriesInUse || [])])]
-      .sort((x, y) => x.localeCompare(y));
-    cf.innerHTML = '<option value="">Any category</option>' + all.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    /* Only the curated list — one short, deliberate set of categories rather
+       than every value that has ever been typed. The last entry opens the
+       manage modal, so anything missing is one click from being added (and
+       then it is both assignable and filterable). */
+    cf.innerHTML = '<option value="">Any category</option>'
+      + (state.categories || []).map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')
+      + '<option value="__add__">+ Add category…</option>';
     cf.value = cur;
   }
 }
@@ -633,9 +634,6 @@ async function loadEntries() {
   state.filteredTotal = data.filtered_total != null ? data.filtered_total : data.grand_total;
   applySort();
   renderEntries();
-  // Categories present in the data, so the filter can reach values that predate
-  // the curated list (Beauty & Fashion is on 1,541 leads but not on the list).
-  state.categoriesInUse = data.categories_in_use || [];
   fillCategorySelects();
   refreshOwnerFilter();
   refreshManagerFilter();
@@ -2269,7 +2267,15 @@ function wire() {
   };
   $('owner-filter').onchange = loadEntries;
   if ($('link-filter')) $('link-filter').onchange = loadEntries;
-  $('cat-filter').onchange = loadEntries;
+  $('cat-filter').onchange = e => {
+    if (e.target.value === '__add__') {
+      e.target.value = '';      // never a real filter value
+      openCat();
+      setTimeout(() => { const f = $('cat-new'); if (f) f.focus(); }, 60);
+      return;
+    }
+    loadEntries();
+  };
   $('status-filter').onchange = loadEntries;
   $('label-filter').onchange = loadEntries;
   $('delivery-filter').onchange = loadEntries;
