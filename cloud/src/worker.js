@@ -191,6 +191,21 @@ async function managerResolver(env) {
   };
 }
 
+/* A GLOB pattern matching `term` anywhere, ignoring case in a way SQLite
+   cannot manage on its own: its lower() and LIKE fold ASCII only, so "É"
+   and "é" were different searches. JavaScript does real Unicode case
+   mapping, so each character becomes a [lower upper] class.
+   GLOB metacharacters (* ? [ ]) are wrapped so they match literally. */
+function globCI(term) {
+  const body = [...String(term || '')].map(ch => {
+    if (ch === '*' || ch === '?' || ch === '[' || ch === ']') return '[' + ch + ']';
+    const lo = ch.toLowerCase(), up = ch.toUpperCase();
+    // Some characters expand when cased (ß -> SS); those stay literal.
+    return (lo !== up && lo.length === 1 && up.length === 1) ? '[' + lo + up + ']' : ch;
+  }).join('');
+  return '*' + body + '*';
+}
+
 function ownerName(user) {
   return user.display_name || user.username;
 }
@@ -1175,8 +1190,12 @@ async function handleApi(request, env, url) {
     const TAB_STAGE = { leads: 'Leads', responses: 'Responses', closed: 'Closed', failed: 'Failed' };
     const tab = p.get('tab') || '';
     if (TAB_STAGE[tab]) { sql += ' AND stage = ?'; args.push(TAB_STAGE[tab]); }
-    const q = (p.get('q') || '').trim().toLowerCase();
-    if (q) { sql += ' AND (LOWER(handle_norm) LIKE ? OR LOWER(email_norm) LIKE ? OR LOWER(first_name) LIKE ?)'; args.push('%' + q + '%', '%' + q + '%', '%' + q + '%'); }
+    const q = (p.get('q') || '').trim();
+    if (q) {
+      sql += ' AND (handle_norm GLOB ? OR email_norm GLOB ? OR first_name GLOB ?)';
+      const g = globCI(q);
+      args.push(g, g, g);
+    }
     // Link-in-bio platform filter ("show me everyone on stan.store").
     // Matches the stored host exactly, so it uses the index rather than a LIKE scan.
     const linkDom = (p.get('link_domain') || '').trim().toLowerCase();
@@ -1189,19 +1208,16 @@ async function handleApi(request, env, url) {
     if (mgr === '__none__') sql += " AND lead_manager = ''";
     else if (mgr) { sql += ' AND lead_manager = ?'; args.push(mgr); }
     /* Bio keyword search. Split on commas and whitespace; ANY matches a bio
-       containing at least one word, ALL requires every one. LIKE wildcards in
-       the user's own text are escaped, otherwise a stray % matches everything
-       and an underscore silently matches any character. */
+       containing at least one word, ALL requires every one. Wildcards in the
+       user's own text match literally — a stray * or ? must not turn into a
+       wildcard. See globCI. */
     const bioRaw = (p.get('bio') || '').trim();
     if (bioRaw) {
       const words = bioRaw.split(/[,\s]+/).map(s => s.trim()).filter(Boolean).slice(0, 10);
       if (words.length) {
         const joiner = (p.get('bio_mode') || 'any').toLowerCase() === 'all' ? ' AND ' : ' OR ';
-        const esc = s => s.toLowerCase().replace(/[\\%_]/g, c => '\\' + c);
-        // SQLite takes string literals verbatim — no backslash escapes — so the
-        // ESCAPE clause needs exactly one backslash character between quotes.
-        sql += ' AND (' + words.map(() => "lower(ig_bio) LIKE ? ESCAPE '\\'").join(joiner) + ')';
-        for (const word of words) args.push('%' + esc(word) + '%');
+        sql += ' AND (' + words.map(() => 'ig_bio GLOB ?').join(joiner) + ')';
+        for (const word of words) args.push(globCI(word));
       }
     }
     /* Demonstrably active: posted in the last 30 days. A blank date fails this
@@ -1787,7 +1803,11 @@ async function handleApi(request, env, url) {
     const labelF = p.get('label') || '';
     if (labelF === 'none') sql += " AND label=''"; else if (labelF) { sql += ' AND label=?'; args.push(labelF); }
     const q = p.get('q') || '';
-    if (q) { sql += ' AND (email LIKE ? OR first_name LIKE ? OR subject LIKE ?)'; const like = `%${q}%`; args.push(like, like, like); }
+    if (q) {
+      sql += ' AND (c.email GLOB ? OR c.first_name GLOB ? OR c.subject GLOB ?)';
+      const g = globCI(q);
+      args.push(g, g, g);
+    }
     if (p.get('date_from')) { sql += ' AND last_lead_msg_at >= ?'; args.push(p.get('date_from')); }
     if (p.get('date_to')) { sql += ' AND last_lead_msg_at <= ?'; args.push(p.get('date_to') + 'T23:59:59.999Z'); }
     const [convRes, campRes, countRes, statusRes, labelRes, catListRes] = await env.DB.batch([
