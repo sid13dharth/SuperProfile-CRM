@@ -400,6 +400,7 @@ function currentForm() {
     first_name: $('f-firstname').value.trim(),
     notes: $('f-notes').value.trim(),
     category: $('f-category').value,
+    country: $('f-country') ? $('f-country').value.trim() : '',
   };
 }
 
@@ -608,7 +609,7 @@ function filterParams() {
   if (state.tab === 'failed') { const rv = $('reason-filter') ? $('reason-filter').value : ''; if (rv) p.set('position', rv); }
   if (state.tab && state.tab !== 'all' && state.tab !== 'videos') p.set('tab', state.tab);
   const bio = $('bio-search') ? $('bio-search').value.trim() : '';
-  if (bio) { p.set('bio', bio); p.set('bio_mode', $('bio-mode') ? $('bio-mode').value : 'any'); }
+  if (bio) p.set('bio', bio);
   if ($('active30') && $('active30').classList.contains('active')) p.set('active30', '1');
   const from = $('date-from').value; if (from) p.set('from', from);
   const to = $('date-to').value; if (to) p.set('to', to);
@@ -641,6 +642,10 @@ async function loadEntries() {
   fillCategorySelects();
   state.countries = data.countries || [];
   refreshCountryFilter();
+  // Suggestions for the two free-text country inputs, so people converge on
+  // one spelling instead of inventing "USA" beside "United States".
+  const dl = $('country-list');
+  if (dl) dl.innerHTML = state.countries.map(c => `<option value="${esc(c.name)}">`).join('');
   refreshOwnerFilter();
   refreshManagerFilter();
   refreshClassifyFilters();
@@ -821,7 +826,7 @@ const CORE_COLS = [
   // Manager is a CRM teammate; owner often is not one, so the two are separate.
   { f: 'lead_manager', h: 'Lead Owner', e: 'manager' },
   { f: 'category',   h: 'Category',   e: 'category', cls: 'cat' },
-  { f: 'country',    h: 'Country',    cls: 'ctry', sortable: true },
+  { f: 'country',    h: 'Country',    e: 'text', cls: 'ctry', sortable: true },
   { f: 'stage',      h: 'Stage',      e: 'stage', cls: 'stg' },
   { f: 'status',     h: 'Status',     e: 'status', cls: 'stt' },
   { f: 'label',      h: 'Label',      e: 'label', cls: 'lbl' },
@@ -1787,6 +1792,7 @@ function openEdit(e) {
     sel.insertAdjacentHTML('beforeend', `<option value="${esc(e.category)}">${esc(e.category)} (removed)</option>`);
   }
   sel.value = e.category || '';
+  if ($('e-country')) $('e-country').value = e.country || '';
 }
 
 async function saveEdit() {
@@ -1798,6 +1804,7 @@ async function saveEdit() {
     first_name: $('e-firstname').value.trim(),
     notes: $('e-notes').value.trim(),
     category: $('e-category').value,
+    country: $('e-country') ? $('e-country').value.trim() : '',
     lead_owner: $('e-owner').value.trim(),
   };
   const btn = $('edit-save'); btn.disabled = true;
@@ -2324,14 +2331,14 @@ function wire() {
      'cat-filter', 'country-filter', 'owner-filter', 'manager-filter', 'link-filter',
      'date-from', 'date-to'].forEach(id => { const e = $(id); if (e) e.value = ''; });
     markPreset('all');
-    if ($('bio-mode')) $('bio-mode').value = 'any';
     if ($('active30')) $('active30').classList.remove('active');
     loadEntries();
   };
   $('owner-filter').onchange = loadEntries;
   if ($('link-filter')) $('link-filter').onchange = loadEntries;
   $('bio-search').addEventListener('input', debounce(loadEntries, 350));
-  $('bio-mode').onchange = () => { if ($('bio-search').value.trim()) loadEntries(); };
+  $('bio-help').onclick = () => $('bio-help-bg').classList.add('open');
+  $('bio-help-close').onclick = () => $('bio-help-bg').classList.remove('open');
   $('active30').onclick = () => { $('active30').classList.toggle('active'); loadEntries(); };
   $('export-csv').onclick = exportCsv;
   $('cat-filter').onchange = e => {
@@ -2471,11 +2478,11 @@ function wire() {
   $('nu-add').onclick = addUser;
 
   // Close modals on backdrop click
-  for (const id of ['master-bg', 'team-bg', 'bulk-bg', 'activity-bg', 'edit-bg', 'cat-bg', 'classify-bg', 'pipe-bg', 'funnel-bg', 'video-bg', 'add-bg', 'close-bg', 'fail-bg', 'ig-bg']) {
+  for (const id of ['master-bg', 'team-bg', 'bulk-bg', 'activity-bg', 'edit-bg', 'cat-bg', 'classify-bg', 'pipe-bg', 'funnel-bg', 'video-bg', 'add-bg', 'close-bg', 'fail-bg', 'ig-bg', 'bio-help-bg']) {
     $(id).addEventListener('click', e => { if (e.target.id === id) $(id).classList.remove('open'); });
   }
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') for (const id of ['master-bg', 'team-bg', 'bulk-bg', 'activity-bg', 'edit-bg', 'cat-bg', 'classify-bg', 'pipe-bg', 'funnel-bg', 'video-bg', 'add-bg', 'close-bg', 'fail-bg', 'ig-bg']) $(id).classList.remove('open');
+    if (e.key === 'Escape') for (const id of ['master-bg', 'team-bg', 'bulk-bg', 'activity-bg', 'edit-bg', 'cat-bg', 'classify-bg', 'pipe-bg', 'funnel-bg', 'video-bg', 'add-bg', 'close-bg', 'fail-bg', 'ig-bg', 'bio-help-bg']) $(id).classList.remove('open');
   });
 }
 

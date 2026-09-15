@@ -91,11 +91,8 @@
         <select id="owner-filter" title="Filter by who sourced the lead"><option value="">Added by: anyone</option></select>
         <select id="manager-filter" title="Filter by the CRM teammate who owns the lead"><option value="">Lead owner: anyone</option></select>
         <select id="link-filter" title="Filter by the platform in their Instagram bio link"><option value="">Any link in bio</option></select>
-        <input id="bio-search" class="bio-box" placeholder="Bio keywords: UGC, teach…" title="Find leads whose Instagram bio mentions these words">
-        <select id="bio-mode" class="bio-mode" title="Match any keyword, or require all of them">
-          <option value="any">any</option>
-          <option value="all">all</option>
-        </select>
+        <input id="bio-search" class="bio-box" placeholder="Bio search: &quot;ugc coach&quot; -freelance" title="Search Instagram bios. Two words means both. Quotes for an exact phrase, minus to exclude, * for a stem, OR for either.">
+        <button class="hbtn bio-help" id="bio-help" title="Search syntax" type="button">?</button>
         <button class="hbtn clear-btn" id="clear-filters" title="Reset every filter, the search box and the date range">Clear all filters</button>
         <button class="hbtn" id="export-csv" title="Download every lead matching the current filters">⬇ Export CSV</button>
       </div>
@@ -144,6 +141,9 @@
         <select id="f-category"><option value="">— none —</option></select>
         <button type="button" class="cat-manage" id="cat-manage-btn" title="Add or remove categories">⚙</button>
       </div>
+    </label>
+    <label class="fld">Country <span class="opt">(optional)</span>
+      <input id="f-country" placeholder="e.g. United States" autocomplete="off" list="country-list">
     </label>
     <label class="fld">Notes <span class="opt">(optional)</span>
       <textarea id="f-notes" placeholder="anything worth remembering about this lead…" rows="2"></textarea>
@@ -235,6 +235,9 @@
         <button type="button" class="cat-manage" id="e-cat-manage-btn" title="Add or remove categories">⚙</button>
       </div>
     </label>
+    <label class="fld">Country <span class="opt">(optional)</span>
+      <input id="e-country" placeholder="e.g. United States" autocomplete="off" list="country-list">
+    </label>
     <label class="fld">Notes
       <textarea id="e-notes" rows="3" placeholder="notes…"></textarea>
     </label>
@@ -243,6 +246,26 @@
       <button class="send" id="edit-save" style="flex:1">Save changes</button>
       <button class="note-btn" id="edit-cancel">Cancel</button>
     </div>
+  </div>
+</div>
+
+<!-- Bio search syntax -->
+<div id="bio-help-bg" class="modal-bg">
+  <div class="modal">
+    <h3>Bio search</h3>
+    <div class="foot-hint">Searches the Instagram bio we fetched for each lead. Whole words, any capitalisation.</div>
+    <table class="syntax-table">
+      <tr><td><code>ugc coach</code></td><td>both words, anywhere in the bio</td></tr>
+      <tr><td><code>"ugc coach"</code></td><td>that exact phrase</td></tr>
+      <tr><td><code>ugc OR creator</code></td><td>either word</td></tr>
+      <tr><td><code>-freelance</code></td><td>exclude bios with that word</td></tr>
+      <tr><td><code>coach*</code></td><td>stem — coach, coaching, coaches</td></tr>
+    </table>
+    <div class="foot-hint" style="margin-top:10px">Mix them freely:<br>
+      <code>"ugc coach" -freelance editor OR strategist</code><br>
+      — bios with the phrase “ugc coach” and either “editor” or “strategist”, excluding anyone who says “freelance”.</div>
+    <div class="foot-hint" style="margin-top:8px">Whole words by default, so <code>ugc</code> does not match <code>ugcreator</code> — use <code>ugc*</code> for that.</div>
+    <div class="row"><button class="note-btn" id="bio-help-close" style="flex:1">Close</button></div>
   </div>
 </div>
 
@@ -517,5 +540,6 @@
 
 <div class="toast" id="toast"></div>
 <script src="/app.js"></script>
+<datalist id="country-list"></datalist>
 </body>
 </html>

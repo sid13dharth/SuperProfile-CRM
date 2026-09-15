@@ -206,6 +206,70 @@ function globCI(term) {
   return '*' + body + '*';
 }
 
+/* ── bio query language ──────────────────────────────────────
+     ugc coach        both words, whole-word      (AND is the default)
+     "ugc coach"      that exact phrase
+     -freelance       exclude
+     coach*           stem: coach, coaching, coaches
+     ugc OR creator   either
+
+   Whole-word matching needs a boundary class each side, and SQLite rejects
+   patterns carrying too many NEGATED range classes — two boundaries plus
+   per-character case classes ([uU][gG][cC]…) trips "GLOB pattern too
+   complex" at about seven letters. Simple classes are cheap; negated ranges
+   are not. So the folding moves to the column (lower(ig_bio)) and the term
+   is lowercased here, leaving it literal and the pattern at exactly two
+   classes however long the phrase.
+
+   Consequence: SQL lower() folds ASCII only, so a bio written CAFÉ is not
+   found by "café" — 55 of 22,189 bios. Fixing that needs a stored,
+   JS-lowercased column; not worth a migration for 0.25%. */
+const BIO_NB = '[^a-z0-9]';
+const bioLit = s => [...s].map(c => (c === '*' || c === '?' || c === '[' || c === ']') ? '[' + c + ']' : c).join('');
+function bioTermGlob(t) {
+  const stem = t.endsWith('*');
+  const core = bioLit((stem ? t.slice(0, -1) : t).toLowerCase());
+  return '*' + BIO_NB + core + (stem ? '*' : BIO_NB + '*');
+}
+function bioTokens(q) {
+  const out = [];
+  const re = /"([^"]*)"|(\S+)/g;
+  let m;
+  while ((m = re.exec(q)) !== null) {
+    if (m[1] !== undefined) { const t = m[1].trim(); if (t) out.push({ text: t }); continue; }
+    let word = m[2];
+    if (/^or$/i.test(word)) { out.push({ or: true }); continue; }
+    let neg = false;
+    if (word.startsWith('-') && word.length > 1) { neg = true; word = word.slice(1); }
+    word = word.replace(/^"|"$/g, '');
+    if (word) out.push({ text: word, neg });
+  }
+  return out;
+}
+/* Terms joined by OR form one group; groups are ANDed. Exclusions are always
+   ANDed as NOT, wherever they appear. Both lists are capped so a pasted
+   essay cannot build an unbounded query. */
+function bioWhere(q, col) {
+  const groups = [], nots = [];
+  let cur = null, pendingOr = false;
+  for (const t of bioTokens(q)) {
+    if (t.or) { pendingOr = true; continue; }
+    if (t.neg) { nots.push(t); pendingOr = false; continue; }
+    if (pendingOr && cur) { cur.push(t); pendingOr = false; continue; }
+    cur = [t]; groups.push(cur);
+  }
+  const parts = [], params = [];
+  for (const g of groups.slice(0, 10)) {
+    parts.push('(' + g.map(() => col + ' GLOB ?').join(' OR ') + ')');
+    for (const t of g) params.push(bioTermGlob(t.text));
+  }
+  for (const t of nots.slice(0, 10)) {
+    parts.push('NOT (' + col + ' GLOB ?)');
+    params.push(bioTermGlob(t.text));
+  }
+  return { sql: parts.join(' AND '), params };
+}
+
 function ownerName(user) {
   return user.display_name || user.username;
 }
@@ -1100,6 +1164,8 @@ async function handleApi(request, env, url) {
     const snap = crmSnapshot(sig);
     const created = nowIso();
     const manager = (await managerResolver(env))(ownerName(user));
+    // Typed by a human, so it must never be overwritten by a re-derive.
+    const country = String(body.country || '').trim();
     // Initial pipeline placement: a fresh lead is in "Leads"; if the CRM already
     // shows a reply/status, pre-fill the stage + position (still fully editable).
     const sug = crmSuggest(snap.crm_status, snap.crm_label);
@@ -1110,13 +1176,13 @@ async function handleApi(request, env, url) {
     // as a duplicate instead of double-storing.
     const res = await env.DB.prepare(
       `INSERT INTO entries
-        (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, lead_owner, lead_manager, created_by, created_at, source, in_master, stage, position,
+        (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, country, country_src, lead_owner, lead_manager, created_by, created_at, source, in_master, stage, position,
          crm_known, crm_contacted, crm_replied, crm_status, crm_poc, crm_campaigns,
          crm_last_contact_at, crm_last_reply_at, crm_checked_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(handle_norm) DO NOTHING`)
       .bind(handle, (body.social_url || body.handle || '').trim(), canonicalUrl(handle),
-            emailRaw, email, firstName, notes, category, ownerName(user), manager, user.username, created, initStage, initPos,
+            emailRaw, email, firstName, notes, category, country, country ? 'manual' : '', ownerName(user), manager, user.username, created, initStage, initPos,
             snap.crm_known, snap.crm_contacted, snap.crm_replied, snap.crm_status, snap.crm_poc,
             snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at)
       .run();
@@ -1214,18 +1280,13 @@ async function handleApi(request, env, url) {
     const mgr = (p.get('manager') || '').trim();
     if (mgr === '__none__') sql += " AND lead_manager = ''";
     else if (mgr) { sql += ' AND lead_manager = ?'; args.push(mgr); }
-    /* Bio keyword search. Split on commas and whitespace; ANY matches a bio
-       containing at least one word, ALL requires every one. Wildcards in the
-       user's own text match literally — a stray * or ? must not turn into a
-       wildcard. See globCI. */
+    // Bio search. See bioWhere for the query language.
     const bioRaw = (p.get('bio') || '').trim();
     if (bioRaw) {
-      const words = bioRaw.split(/[,\s]+/).map(s => s.trim()).filter(Boolean).slice(0, 10);
-      if (words.length) {
-        const joiner = (p.get('bio_mode') || 'any').toLowerCase() === 'all' ? ' AND ' : ' OR ';
-        sql += ' AND (' + words.map(() => 'ig_bio GLOB ?').join(joiner) + ')';
-        for (const word of words) args.push(globCI(word));
-      }
+      // Padded so a word at the very start or end of a bio still has a
+      // boundary on both sides.
+      const bw = bioWhere(bioRaw, "(' ' || lower(ig_bio) || ' ')");
+      if (bw.sql) { sql += ' AND (' + bw.sql + ')'; args.push(...bw.params); }
     }
     /* Demonstrably active: posted in the last 30 days. A blank date fails this
        comparison, which is intended — 2,893 leads are private, gone, or have
@@ -2494,6 +2555,11 @@ async function editEntry(env, user, body) {
   if ('first_name' in body) { sets.push('first_name=?'); args.push(String(body.first_name || '').trim()); }
   if ('notes' in body) { sets.push('notes=?'); args.push(String(body.notes || '').trim()); }
   if ('category' in body) { sets.push('category=?'); args.push(String(body.category || '').trim()); }
+  // A hand-set country is marked 'manual' so a future re-derive leaves it be.
+  if ('country' in body) {
+    const c = String(body.country || '').trim();
+    sets.push('country=?', 'country_src=?'); args.push(c, c ? 'manual' : '');
+  }
   if ('lead_owner' in body) {
     const newOwner = String(body.lead_owner || '').trim();
     sets.push('lead_owner=?'); args.push(newOwner);

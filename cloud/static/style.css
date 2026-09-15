@@ -704,7 +704,7 @@ table.grid td.uname .ptag {
 
 /* Bio keyword search + its any/all toggle, and the activity chip. */
 .list-controls .bio-box { min-width: 210px; }
-.list-controls .bio-mode { max-width: 74px; }
+.list-controls .bio-help { padding: 7px 11px; font-weight: 700; }
 .date-bar .chip.act30 { margin-left: 4px; }
 .date-bar .chip.act30.active { border-color: var(--green); color: var(--green); }
 
@@ -712,3 +712,9 @@ table.grid td.uname .ptag {
    metadata rather than a hard field. */
 td.ctry, th.ctry { min-width: 110px; max-width: 150px; }
 td.ctry { color: var(--muted); }
+
+/* Bio search syntax reference */
+.syntax-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+.syntax-table td { padding: 6px 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.syntax-table td:first-child { width: 42%; white-space: nowrap; }
+.syntax-table td:last-child { color: var(--muted); }
