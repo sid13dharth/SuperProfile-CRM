@@ -477,6 +477,8 @@ function entryDict(row, crmUrl) {
     category: row.category || '',
     lead_owner: row.lead_owner,
     lead_manager: row.lead_manager || '',
+    country: row.country || '',
+    country_src: row.country_src || '',
     created_by: row.created_by,
     created_at: row.created_at,
     source: row.source || 'added',
@@ -1164,6 +1166,11 @@ async function handleApi(request, env, url) {
     const args = [];
     const owner = p.get('owner') || '';
     if (owner) { sql += ' AND lead_owner = ?'; args.push(owner); }
+    const ctry = (p.get('country') || '').trim();
+    // __none__ finds the leads still missing one, which is the useful query
+    // while coverage is partial.
+    if (ctry === '__none__') sql += " AND country = ''";
+    else if (ctry) { sql += ' AND country = ?'; args.push(ctry); }
     const cat = p.get('category') || '';
     if (cat) { sql += ' AND category = ?'; args.push(cat); }
     const stg = p.get('stage') || '';
@@ -1245,9 +1252,11 @@ async function handleApi(request, env, url) {
     // page. Still bounded so a pathological caller can't ask for unbounded rows.
     const limit = Math.min(parseInt(p.get('limit') || '1000', 10) || 1000, 100000);
     sql += ' LIMIT ' + limit;
-    const [{ results }, ownersRes, statusRes, labelRes, totalRes, filteredRes] = await Promise.all([
+    const [{ results }, ownersRes, ctryRes, statusRes, labelRes, totalRes, filteredRes] = await Promise.all([
       env.DB.prepare(sql).bind(...args).all(),
       env.DB.prepare("SELECT DISTINCT lead_owner FROM entries WHERE lead_owner != '' ORDER BY lead_owner").all(),
+      env.DB.prepare("SELECT country, COUNT(*) n FROM entries WHERE country != ''"
+        + " GROUP BY country ORDER BY n DESC, country").all(),
       // Status dropdown = the editable statuses vocabulary ({key,label}).
       env.DB.prepare('SELECT key, label FROM statuses ORDER BY sort, label').all(),
       // Label dropdown = the editable crm_labels vocabulary (seeded from the
@@ -1264,6 +1273,7 @@ async function handleApi(request, env, url) {
     return json({
       entries: results.map(r => ({ ...entryDict(r, crmUrl), partner: partners.has(r.handle_norm) })),
       owners: ownersRes.results.map(o => o.lead_owner),
+      countries: ctryRes.results.map(r => ({ name: r.country, n: r.n })),
       // {key,label} pairs — the grid shows label, filters/saves by key.
       statuses: statusRes.results.map(o => ({ key: o.key, label: o.label })),
       labels: labelRes.results.map(o => o.name),

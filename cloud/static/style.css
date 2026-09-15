@@ -707,3 +707,8 @@ table.grid td.uname .ptag {
 .list-controls .bio-mode { max-width: 74px; }
 .date-bar .chip.act30 { margin-left: 4px; }
 .date-bar .chip.act30.active { border-color: var(--green); color: var(--green); }
+
+/* Country. Derived, not authoritative — see migrate_v14 — so it reads as
+   metadata rather than a hard field. */
+td.ctry, th.ctry { min-width: 110px; max-width: 150px; }
+td.ctry { color: var(--muted); }

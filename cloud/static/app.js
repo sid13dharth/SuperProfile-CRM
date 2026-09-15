@@ -599,6 +599,7 @@ function filterParams() {
   const mf = $('manager-filter') ? $('manager-filter').value : ''; if (mf) p.set('manager', mf);
   const lf = $('link-filter') ? $('link-filter').value : ''; if (lf) p.set('link_domain', lf);
   const cf = $('cat-filter').value; if (cf) p.set('category', cf);
+  const ct = $('country-filter') ? $('country-filter').value : ''; if (ct) p.set('country', ct);
   const stt = $('status-filter') ? $('status-filter').value : ''; if (stt) p.set('status', stt);
   const lbl = $('label-filter') ? $('label-filter').value : ''; if (lbl) p.set('label', lbl);
   // Delivery-status filter applies only on the Closed tab (it's the lead's
@@ -638,6 +639,8 @@ async function loadEntries() {
   applySort();
   renderEntries();
   fillCategorySelects();
+  state.countries = data.countries || [];
+  refreshCountryFilter();
   refreshOwnerFilter();
   refreshManagerFilter();
   refreshClassifyFilters();
@@ -748,6 +751,19 @@ function refreshManagerFilter() {
   sel.value = cur;
 }
 
+/* Countries actually present, commonest first — there is no curated list to
+   draw on, and ordering by volume puts the four that matter at the top.
+   Coverage is partial (7,168 of 24,444), so "No country" is offered too. */
+function refreshCountryFilter() {
+  const sel = $('country-filter'); if (!sel) return;
+  const cur = sel.value;
+  const list = state.countries || [];
+  sel.innerHTML = '<option value="">Any country</option>'
+    + '<option value="__none__">— No country —</option>'
+    + list.map(c => `<option value="${esc(c.name)}">${esc(c.name)} (${c.n})</option>`).join('');
+  sel.value = cur;
+}
+
 function refreshOwnerFilter() {
   const sel = $('owner-filter');
   const cur = sel.value;
@@ -805,6 +821,7 @@ const CORE_COLS = [
   // Manager is a CRM teammate; owner often is not one, so the two are separate.
   { f: 'lead_manager', h: 'Lead Owner', e: 'manager' },
   { f: 'category',   h: 'Category',   e: 'category', cls: 'cat' },
+  { f: 'country',    h: 'Country',    cls: 'ctry', sortable: true },
   { f: 'stage',      h: 'Stage',      e: 'stage', cls: 'stg' },
   { f: 'status',     h: 'Status',     e: 'status', cls: 'stt' },
   { f: 'label',      h: 'Label',      e: 'label', cls: 'lbl' },
@@ -2304,7 +2321,7 @@ function wire() {
      which list you are looking at, so it deliberately stays put. */
   $('clear-filters').onclick = () => {
     ['search', 'bio-search', 'status-filter', 'label-filter', 'delivery-filter', 'reason-filter',
-     'cat-filter', 'owner-filter', 'manager-filter', 'link-filter',
+     'cat-filter', 'country-filter', 'owner-filter', 'manager-filter', 'link-filter',
      'date-from', 'date-to'].forEach(id => { const e = $(id); if (e) e.value = ''; });
     markPreset('all');
     if ($('bio-mode')) $('bio-mode').value = 'any';
@@ -2331,6 +2348,7 @@ function wire() {
   $('delivery-filter').onchange = loadEntries;
   $('reason-filter').onchange = loadEntries;
   if ($('manager-filter')) $('manager-filter').onchange = loadEntries;
+  if ($('country-filter')) $('country-filter').onchange = loadEntries;
 
   // Add-lead modal
   $('open-add-btn').onclick = () => { $('add-bg').classList.add('open'); setTimeout(() => $('f-social').focus(), 60); };
