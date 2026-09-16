@@ -1299,8 +1299,11 @@ async function handleApi(request, env, url) {
     const q = (p.get('q') || '').trim();
     if (q) {
       // handle_norm and email_norm are stored lowercase already.
-      sql += " AND (handle_norm LIKE ? ESCAPE '\' OR email_norm LIKE ? ESCAPE '\'"
-        + " OR lower(first_name) LIKE ? ESCAPE '\')";
+      /* '\\' here is ONE backslash in the SQL text. Writing '\' would collapse
+         to '' in JavaScript and SQLite rejects it: "ESCAPE expression must be
+         a single character". */
+      sql += " AND (handle_norm LIKE ? ESCAPE '\\' OR email_norm LIKE ? ESCAPE '\\'"
+        + " OR lower(first_name) LIKE ? ESCAPE '\\')";
       const t = likeTerm(q);
       args.push(t, t, t);
     }
@@ -1910,8 +1913,9 @@ async function handleApi(request, env, url) {
     if (labelF === 'none') sql += " AND label=''"; else if (labelF) { sql += ' AND lower(label)=?'; args.push(labelF.toLowerCase()); }
     const q = p.get('q') || '';
     if (q) {
-      sql += " AND (lower(c.email) LIKE ? ESCAPE '\' OR lower(c.first_name) LIKE ? ESCAPE '\'"
-        + " OR lower(c.subject) LIKE ? ESCAPE '\')";
+      // See the note on the CRM search: '\\' is one backslash in the SQL.
+      sql += " AND (lower(c.email) LIKE ? ESCAPE '\\' OR lower(c.first_name) LIKE ? ESCAPE '\\'"
+        + " OR lower(c.subject) LIKE ? ESCAPE '\\')";
       const t = likeTerm(q);
       args.push(t, t, t);
     }
