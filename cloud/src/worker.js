@@ -191,94 +191,22 @@ async function managerResolver(env) {
   };
 }
 
-/* A GLOB pattern matching `term` anywhere, ignoring case in a way SQLite
-   cannot manage on its own: its lower() and LIKE fold ASCII only, so "É"
-   and "é" were different searches. JavaScript does real Unicode case
-   mapping, so each character becomes a [lower upper] class.
-   GLOB metacharacters (* ? [ ]) are wrapped so they match literally. */
-function globCI(term) {
-  const body = [...String(term || '')].map(ch => {
-    if (ch === '*' || ch === '?' || ch === '[' || ch === ']') return '[' + ch + ']';
-    const lo = ch.toLowerCase(), up = ch.toUpperCase();
-    // Some characters expand when cased (ß -> SS); those stay literal.
-    return (lo !== up && lo.length === 1 && up.length === 1) ? '[' + lo + up + ']' : ch;
-  }).join('');
-  return '*' + body + '*';
-}
+/* A LIKE term matching `term` anywhere, case-insensitively.
 
-/* ── bio query language ──────────────────────────────────────
-     ugc coach        both words, whole-word      (AND is the default)
-     "ugc coach"      that exact phrase
-     -freelance       exclude
-     coach*           stem: coach, coaching, coaches
-     ugc OR creator   either
+   This replaced a GLOB builder that emitted one [lL] class per character.
+   SQLite caps GLOB pattern complexity, so any search of 12+ characters threw
+   "LIKE or GLOB pattern too complex" and the grid came back empty — it had
+   only ever been tested up to nine.
 
-   Whole-word matching needs a boundary class each side, and SQLite rejects
-   patterns carrying too many NEGATED range classes — two boundaries plus
-   per-character case classes ([uU][gG][cC]…) trips "GLOB pattern too
-   complex" at about seven letters. Simple classes are cheap; negated ranges
-   are not. So the folding moves to the column (lower(ig_bio)) and the term
-   is lowercased here, leaving it literal and the pattern at exactly two
-   classes however long the phrase.
-
-   The column it matches is ig_bio_lc — folded once in JavaScript, which is
-   Unicode-aware, when the bio is fetched. SQL lower() would fold only ASCII
-   and 21,604 of 22,189 bios carry non-ASCII, so "café" would not have found
-   a bio written CAFÉ. See migrate_v15. */
-const BIO_NB = '[^a-z0-9]';
-const bioLit = s => [...s].map(c => (c === '*' || c === '?' || c === '[' || c === ']') ? '[' + c + ']' : c).join('');
-function bioTermGlob(t) {
-  const stem = t.endsWith('*');
-  const core = bioLit((stem ? t.slice(0, -1) : t).toLowerCase());
-  return '*' + BIO_NB + core + (stem ? '*' : BIO_NB + '*');
+   Callers must compare against an already-lowered column (handle_norm and
+   email_norm are stored that way; wrap anything else in lower()). % and _ are
+   escaped so a search for "50%" does not match every row; the ESCAPE clause
+   needs exactly one backslash, because SQLite takes string literals verbatim.
+   Note lower() folds ASCII only — 164 of 23,312 first names carry non-ASCII
+   and will still be case-exact. */
+function likeTerm(term) {
+  return '%' + String(term || '').toLowerCase().replace(/[\\\\%_]/g, c => '\\' + c) + '%';
 }
-function bioTokens(q) {
-  const out = [];
-  /* The minus has to be part of the quoted alternative, not just the bare-word
-     one — otherwise -"social media manager" tokenises as the word -"social
-     followed by media and manager", which silently returns nothing instead of
-     excluding the phrase. */
-  const re = /(-?)"([^"]*)"|(\S+)/g;
-  let m;
-  while ((m = re.exec(q)) !== null) {
-    if (m[2] !== undefined) {
-      const t = m[2].trim();
-      if (t) out.push({ text: t, neg: m[1] === '-' });
-      continue;
-    }
-    let word = m[3];
-    if (/^or$/i.test(word)) { out.push({ or: true }); continue; }
-    let neg = false;
-    if (word.startsWith('-') && word.length > 1) { neg = true; word = word.slice(1); }
-    word = word.replace(/^"|"$/g, '');
-    if (word) out.push({ text: word, neg });
-  }
-  return out;
-}
-/* Terms joined by OR form one group; groups are ANDed. Exclusions are always
-   ANDed as NOT, wherever they appear. Both lists are capped so a pasted
-   essay cannot build an unbounded query. */
-function bioWhere(q, col) {
-  const groups = [], nots = [];
-  let cur = null, pendingOr = false;
-  for (const t of bioTokens(q)) {
-    if (t.or) { pendingOr = true; continue; }
-    if (t.neg) { nots.push(t); pendingOr = false; continue; }
-    if (pendingOr && cur) { cur.push(t); pendingOr = false; continue; }
-    cur = [t]; groups.push(cur);
-  }
-  const parts = [], params = [];
-  for (const g of groups.slice(0, 10)) {
-    parts.push('(' + g.map(() => col + ' GLOB ?').join(' OR ') + ')');
-    for (const t of g) params.push(bioTermGlob(t.text));
-  }
-  for (const t of nots.slice(0, 10)) {
-    parts.push('NOT (' + col + ' GLOB ?)');
-    params.push(bioTermGlob(t.text));
-  }
-  return { sql: parts.join(' AND '), params };
-}
-
 function ownerName(user) {
   return user.display_name || user.username;
 }
@@ -1278,9 +1206,11 @@ async function handleApi(request, env, url) {
     if (TAB_STAGE[tab]) { sql += ' AND stage = ?'; args.push(TAB_STAGE[tab]); }
     const q = (p.get('q') || '').trim();
     if (q) {
-      sql += ' AND (handle_norm GLOB ? OR email_norm GLOB ? OR first_name GLOB ?)';
-      const g = globCI(q);
-      args.push(g, g, g);
+      // handle_norm and email_norm are stored lowercase already.
+      sql += " AND (handle_norm LIKE ? ESCAPE '\' OR email_norm LIKE ? ESCAPE '\'"
+        + " OR lower(first_name) LIKE ? ESCAPE '\')";
+      const t = likeTerm(q);
+      args.push(t, t, t);
     }
     // Link-in-bio platform filter ("show me everyone on stan.store").
     // Matches the stored host exactly, so it uses the index rather than a LIKE scan.
@@ -1888,9 +1818,10 @@ async function handleApi(request, env, url) {
     if (labelF === 'none') sql += " AND label=''"; else if (labelF) { sql += ' AND lower(label)=?'; args.push(labelF.toLowerCase()); }
     const q = p.get('q') || '';
     if (q) {
-      sql += ' AND (c.email GLOB ? OR c.first_name GLOB ? OR c.subject GLOB ?)';
-      const g = globCI(q);
-      args.push(g, g, g);
+      sql += " AND (lower(c.email) LIKE ? ESCAPE '\' OR lower(c.first_name) LIKE ? ESCAPE '\'"
+        + " OR lower(c.subject) LIKE ? ESCAPE '\')";
+      const t = likeTerm(q);
+      args.push(t, t, t);
     }
     if (p.get('date_from')) { sql += ' AND last_lead_msg_at >= ?'; args.push(p.get('date_from')); }
     if (p.get('date_to')) { sql += ' AND last_lead_msg_at <= ?'; args.push(p.get('date_to') + 'T23:59:59.999Z'); }
