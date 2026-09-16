@@ -234,11 +234,19 @@ function bioTermGlob(t) {
 }
 function bioTokens(q) {
   const out = [];
-  const re = /"([^"]*)"|(\S+)/g;
+  /* The minus has to be part of the quoted alternative, not just the bare-word
+     one — otherwise -"social media manager" tokenises as the word -"social
+     followed by media and manager", which silently returns nothing instead of
+     excluding the phrase. */
+  const re = /(-?)"([^"]*)"|(\S+)/g;
   let m;
   while ((m = re.exec(q)) !== null) {
-    if (m[1] !== undefined) { const t = m[1].trim(); if (t) out.push({ text: t }); continue; }
-    let word = m[2];
+    if (m[2] !== undefined) {
+      const t = m[2].trim();
+      if (t) out.push({ text: t, neg: m[1] === '-' });
+      continue;
+    }
+    let word = m[3];
     if (/^or$/i.test(word)) { out.push({ or: true }); continue; }
     let neg = false;
     if (word.startsWith('-') && word.length > 1) { neg = true; word = word.slice(1); }
