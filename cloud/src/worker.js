@@ -203,10 +203,102 @@ async function managerResolver(env) {
    escaped so a search for "50%" does not match every row; the ESCAPE clause
    needs exactly one backslash, because SQLite takes string literals verbatim.
    Note lower() folds ASCII only — 164 of 23,312 first names carry non-ASCII
-   and will still be case-exact. */
+   and will still be case-exact.
+
+   The pattern is also clamped: D1 rejects a LIKE/GLOB pattern longer than
+   about 50 characters (measured — 46 works, 50 throws "pattern too complex"
+   and 500s the request). A search string that long is effectively unique, so
+   truncating to a prefix returns the same rows and can never fail. */
+const PATTERN_MAX = 44;
 function likeTerm(term) {
-  return '%' + String(term || '').toLowerCase().replace(/[\\\\%_]/g, c => '\\' + c) + '%';
+  let t = String(term || '').toLowerCase().replace(/[\\%_]/g, c => '\\' + c);
+  if (t.length > PATTERN_MAX) t = t.slice(0, PATTERN_MAX);
+  // Never end on a lone escape character, or the pattern is malformed.
+  if (t.match(/\\*$/)[0].length % 2 === 1) t = t.slice(0, -1);
+  return '%' + t + '%';
 }
+/* ── bio query language ──────────────────────────────────────
+     ugc coach        both words, whole-word      (AND is the default)
+     "ugc coach"      that exact phrase
+     -freelance       exclude
+     coach*           stem: coach, coaching, coaches
+     ugc OR creator   either
+
+   Whole-word matching needs a boundary class each side, and SQLite rejects
+   patterns carrying too many NEGATED range classes — two boundaries plus
+   per-character case classes ([uU][gG][cC]…) trips "GLOB pattern too
+   complex" at about seven letters. Simple classes are cheap; negated ranges
+   are not. So the folding moves to the column (lower(ig_bio)) and the term
+   is lowercased here, leaving it literal and the pattern at exactly two
+   classes however long the phrase.
+
+   The column it matches is ig_bio_lc — folded once in JavaScript, which is
+   Unicode-aware, when the bio is fetched. SQL lower() would fold only ASCII
+   and 21,604 of 22,189 bios carry non-ASCII, so "café" would not have found
+   a bio written CAFÉ. See migrate_v15. */
+const BIO_NB = '[^a-z0-9]';
+const bioLit = s => [...s].map(c => (c === '*' || c === '?' || c === '[' || c === ']') ? '[' + c + ']' : c).join('');
+/* SQLite refuses a GLOB pattern once it gets long, and the boundary classes
+   push a term over that line at about 31 characters — a phrase like
+   "supercalifragilisticexpialidocious" threw "pattern too complex" and the
+   whole search 500'd. Past that length the word-boundary guarantee is dropped
+   and the term matches as a substring: at 30+ characters a word is effectively
+   unique anyway, so nothing useful is lost and the query cannot fail. */
+const BIO_MAX_EXACT = 30;
+function bioTermGlob(t) {
+  const stem = t.endsWith('*');
+  let core = bioLit((stem ? t.slice(0, -1) : t).toLowerCase());
+  if (core.length > PATTERN_MAX) core = core.slice(0, PATTERN_MAX);
+  if (core.length > BIO_MAX_EXACT) return '*' + core + '*';
+  return '*' + BIO_NB + core + (stem ? '*' : BIO_NB + '*');
+}
+function bioTokens(q) {
+  const out = [];
+  /* The minus has to be part of the quoted alternative, not just the bare-word
+     one — otherwise -"social media manager" tokenises as the word -"social
+     followed by media and manager", which silently returns nothing instead of
+     excluding the phrase. */
+  const re = /(-?)"([^"]*)"|(\S+)/g;
+  let m;
+  while ((m = re.exec(q)) !== null) {
+    if (m[2] !== undefined) {
+      const t = m[2].trim();
+      if (t) out.push({ text: t, neg: m[1] === '-' });
+      continue;
+    }
+    let word = m[3];
+    if (/^or$/i.test(word)) { out.push({ or: true }); continue; }
+    let neg = false;
+    if (word.startsWith('-') && word.length > 1) { neg = true; word = word.slice(1); }
+    word = word.replace(/^"|"$/g, '');
+    if (word) out.push({ text: word, neg });
+  }
+  return out;
+}
+/* Terms joined by OR form one group; groups are ANDed. Exclusions are always
+   ANDed as NOT, wherever they appear. Both lists are capped so a pasted
+   essay cannot build an unbounded query. */
+function bioWhere(q, col) {
+  const groups = [], nots = [];
+  let cur = null, pendingOr = false;
+  for (const t of bioTokens(q)) {
+    if (t.or) { pendingOr = true; continue; }
+    if (t.neg) { nots.push(t); pendingOr = false; continue; }
+    if (pendingOr && cur) { cur.push(t); pendingOr = false; continue; }
+    cur = [t]; groups.push(cur);
+  }
+  const parts = [], params = [];
+  for (const g of groups.slice(0, 10)) {
+    parts.push('(' + g.map(() => col + ' GLOB ?').join(' OR ') + ')');
+    for (const t of g) params.push(bioTermGlob(t.text));
+  }
+  for (const t of nots.slice(0, 10)) {
+    parts.push('NOT (' + col + ' GLOB ?)');
+    params.push(bioTermGlob(t.text));
+  }
+  return { sql: parts.join(' AND '), params };
+}
+
 function ownerName(user) {
   return user.display_name || user.username;
 }
