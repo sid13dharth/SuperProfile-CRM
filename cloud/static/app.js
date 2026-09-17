@@ -821,23 +821,26 @@ const CORE_COLS = [
   { f: 'first_name', h: 'First Name', e: 'text' },
   { f: 'social_url', h: 'Username',   e: 'text', cls: 'uname', uname: true },
   { h: 'Primary Social Profile', link: true, cls: 'lnk' },
+  { f: 'category',   h: 'Category',   e: 'category', cls: 'cat' },
+  { f: 'country',    h: 'Country',    e: 'text', cls: 'ctry', sortable: true },
   { f: 'email',      h: 'Email',      e: 'text' },
+  // Instagram figures the team scans while qualifying a lead, so they sit
+  // next to the email rather than off at the far right. Not editable: they
+  // are fetched from HikerAPI, so there is no `e:` and the grid renders them
+  // read-only.
+  { f: 'ig_bio',          h: 'Bio',              ig: 'text', cls: 'igbio' },
+  { f: 'ig_avg_views_10', h: 'Avg Views (10)',   ig: 'num',  cls: 'ig', sortable: true },
+  { f: 'ig_followers',    h: 'Followers',        ig: 'num',  cls: 'ig', sortable: true },
+  { f: 'ig_last_post_at', h: 'Last Post',        ig: 'ago',  cls: 'ig igago', staleAfter: 30, agoOf: 'Last post' },
   { f: 'lead_owner', h: 'Added by', e: 'owner' },
   // Manager is a CRM teammate; owner often is not one, so the two are separate.
   { f: 'lead_manager', h: 'Lead Owner', e: 'manager' },
-  { f: 'category',   h: 'Category',   e: 'category', cls: 'cat' },
-  { f: 'country',    h: 'Country',    e: 'text', cls: 'ctry', sortable: true },
   { f: 'stage',      h: 'Stage',      e: 'stage', cls: 'stg' },
   { f: 'status',     h: 'Status',     e: 'status', cls: 'stt' },
   { f: 'label',      h: 'Label',      e: 'label', cls: 'lbl' },
   { f: 'notes',      h: 'Notes',      e: 'notes', cls: 'notes' },
   { h: 'CRM',        status: true, cls: 'st' },
-  // Instagram, filled from HikerAPI. Not editable — they are fetched values,
-  // so there is no `e:` and the grid renders them read-only.
-  { f: 'ig_followers',    h: 'Followers',        ig: 'num',  cls: 'ig', sortable: true },
-  { f: 'ig_last_post_at', h: 'Last Post',        ig: 'date', cls: 'ig igdate' },
-  { f: 'ig_avg_views_10', h: 'Avg Views (10)',   ig: 'num',  cls: 'ig', sortable: true },
-  { f: 'ig_bio',          h: 'Bio',              ig: 'text', cls: 'igbio' },
+  // The remaining HikerAPI fields, read-only for the same reason.
   { f: 'ig_link',         h: 'Link in bio',      ig: 'link', cls: 'iglink' },
   { f: 'ig_checked_at',   h: 'Last enriched',    ig: 'ago',  cls: 'ig igago', sortable: true },
 ];
@@ -918,18 +921,13 @@ function igCell(e, c) {
     const d = new Date(v); if (isNaN(d)) return ph;
     const days = Math.floor((Date.now() - d.getTime()) / 86400000);
     const label = days <= 0 ? 'today' : days === 1 ? '1d ago' : days + 'd ago';
-    // Same 90-day threshold as Last Post: past that, followers and view
-    // counts have usually moved enough to be worth re-fetching.
-    const cls = days > 90 ? ' stale' : '';
-    return '<span class="igv' + cls + '" title="Enriched ' + esc(fmtDMY(d.toISOString().slice(0, 10))) + '">' + esc(label) + '</span>';
-  }
-  if (c.ig === 'date') {
-    const d = new Date(v); if (isNaN(d)) return ph;
-    const days = Math.floor((Date.now() - d.getTime()) / 86400000);
-    const label = fmtDMY(d.toISOString().slice(0, 10));
-    // Flag leads who have gone quiet — that is the point of the column.
-    const cls = days > 90 ? ' stale' : '';
-    return '<span class="igv' + cls + '" title="' + esc(days + ' days ago') + '">' + esc(label) + '</span>';
+    // Amber past the column's own threshold. For Last Post that is 30 days —
+    // a lead who has gone quiet for a month is a different prospect, and
+    // spotting that is the point of the column. For Last enriched it is 90,
+    // by when followers and view counts have usually moved enough to refetch.
+    const cls = days > (c.staleAfter || 90) ? ' stale' : '';
+    const when = (c.agoOf || 'Enriched') + ' ' + fmtDMY(d.toISOString().slice(0, 10));
+    return '<span class="igv' + cls + '" title="' + esc(when) + '">' + esc(label) + '</span>';
   }
   return '<span class="igv" title="' + esc(Number(v).toLocaleString()) + '">' + esc(fmtCount(Number(v))) + '</span>';
 }
@@ -1466,13 +1464,14 @@ function renderTabs() {
 }
 /* ── deep links (the Chrome extension links straight into a lead) ──
    ?lead=<handle>   open that lead's conversation popup
+   ?conv=<handle>   open that lead's email thread in the Unibox
    ?email=<handle>  open that lead's editor, focused on the email field
    ?add=<handle>    open the Add-lead modal with the username prefilled
    Parsed once at boot and HELD: if the user is logged out they hit the login
    screen first, and the intent has to survive that instead of being dropped. */
 const deepLink = (() => {
   const q = new URLSearchParams(location.search);
-  for (const kind of ['lead', 'email', 'add', 'videos']) {
+  for (const kind of ['lead', 'conv', 'email', 'add', 'videos']) {
     const v = (q.get(kind) || '').trim().toLowerCase().replace(/^@+/, '');
     if (v) return { kind, handle: v };
   }
@@ -1510,6 +1509,16 @@ async function runDeepLink() {
   await switchTab('all');
   const e = state.entries.find(x => String(x.handle || '').toLowerCase() === handle);
   if (!e) { toast('@' + handle + ' is not in the CRM'); return; }
+  /* The reply thread lives in the Unibox, and the Unibox looks a conversation
+     up by email address, not by handle — so the translation happens here,
+     where the CRM row that holds both is already in hand. The lead stays
+     searched behind the frame, so closing the Unibox leaves you on them. */
+  if (kind === 'conv') {
+    if (!e.email) { toast('@' + handle + ' has no email address, so there is no thread to open'); return; }
+    switchView('unibox', '?lead=' + encodeURIComponent(e.email));
+    return;
+  }
+
   if (kind === 'email') {
     openEdit(e);
     setTimeout(() => { const f = $('e-email'); if (f) { f.focus(); f.select(); } }, 80);
@@ -2067,7 +2076,12 @@ async function runBulk() {
   try {
     const res = await api('/api/entries/bulk', { method: 'POST', body: { rows: bulkRows } });
     renderBulkReport(res);
-    toast(`Added ${res.added} · ${res.duplicate} dupes`);
+    // Say how much Instagram data came back, and what is still outstanding —
+    // a partial enrichment that nobody mentions is how the backlog grew.
+    let msg = `Added ${res.added} · ${res.duplicate} dupes`;
+    if (res.enriched) msg += ` · IG data for ${res.enriched}`;
+    if (res.enrich_pending) msg += ` · ${res.enrich_pending} awaiting IG data`;
+    toast(msg);
     await loadEntries();
   } catch (e) { $('bulk-report').innerHTML = `<div style="color:var(--red)">${esc(e.message)}</div>`; }
   finally { btn.disabled = false; btn.textContent = old; }

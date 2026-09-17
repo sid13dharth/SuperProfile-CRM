@@ -22,7 +22,7 @@ the extension stops working.
 3. Click **Load unpacked** (top left)
 4. Pick the folder you unzipped — the one containing `manifest.json`
 
-You should see **SuperProfile CRM — Instagram lookup, version 1.5.0**.
+You should see **SuperProfile CRM — Instagram lookup, version 1.5.1**.
 
 ### Already have an older version?
 
@@ -37,7 +37,7 @@ disk, and nothing fetches a new copy. Replace the files first:
 If you unzip somewhere new instead, **Remove** the old card and **Load
 unpacked** the new folder — the old entry still points at the old files.
 
-Check the version in the panel header. It must say **v1.5.0**.
+Check the version in the panel header. It must say **v1.5.1**.
 
 ## 3. Log into the CRM
 

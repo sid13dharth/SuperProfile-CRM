@@ -124,7 +124,9 @@ function render(handle, d) {
       + '<div class="spcrm-mailmsg"></div></div>');
   }
   if (d.replied) {
-    parts.push(`<a class="spcrm-btn spcrm-primary" href="${base}/?lead=${qh}" target="_blank" rel="noopener">Open Conversation →</a>`);
+    // ?conv, not ?lead: the thread itself is in the Unibox. ?lead stays the
+    // link for "show me this lead in the CRM".
+    parts.push(`<a class="spcrm-btn spcrm-primary" href="${base}/?conv=${qh}" target="_blank" rel="noopener">Open Conversation →</a>`);
   } else {
     parts.push(`<div class="spcrm-state">${d.contacted ? 'Contacted but never replied' : 'Never Contacted'}</div>`
       + `<a class="spcrm-btn" href="${base}/?lead=${qh}" target="_blank" rel="noopener">Open in CRM →</a>`);
