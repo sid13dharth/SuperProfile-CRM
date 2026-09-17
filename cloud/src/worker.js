@@ -2530,12 +2530,14 @@ async function bulkAdd(env, user, rawRows) {
             snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at);
   });
 
+  const addedHandles = [];
   for (let i = 0; i < stmts.length; i += 50) {
     const res = await env.DB.batch(stmts.slice(i, i + 50));
     res.forEach((rr, j) => {
       const { r, sig } = inserts[i + j];
       if (rr.meta && rr.meta.changes) {
         added++;
+        addedHandles.push(r.handle);
         report.push({ handle: r.handle, email: r.emailRaw, status: 'added',
                       verdict: verdictFor({ dup: false, in_master: false }, sig) });
       } else {
@@ -2546,7 +2548,31 @@ async function bulkAdd(env, user, rawRows) {
   }
 
   if (added) await bumpVersion(env);
-  return { ok: true, added, duplicate, invalid, total: rows.length, crm_error: crmErr, report };
+
+  /* Instagram enrichment for what was just added, matching the single-add
+     form. Bounded to IG_STEP_LEADS: two HikerAPI calls per lead against a
+     1,000-subrequest cap means 500 rows would consume the entire budget with
+     nothing left for retries. Best-effort — a lead must never fail to save
+     because Instagram was slow — and the count is returned so the UI can say
+     what is left rather than leaving it invisible. */
+  let enriched = 0, enrichPending = 0;
+  if (addedHandles.length) {
+    const take = addedHandles.slice(0, IG_STEP_LEADS);
+    enrichPending = addedHandles.length - take.length;
+    try {
+      const ph = take.map(() => '?').join(',');
+      const { results: fresh } = await env.DB.prepare(
+        `SELECT id, handle_norm, ig_user_id FROM entries WHERE handle_norm IN (${ph})`).bind(...take).all();
+      if (fresh.length) {
+        const outcomes = await enrichRows(env, fresh);
+        enriched = outcomes.length;
+        await bumpVersion(env);
+      }
+    } catch (e) { console.log('ig enrich on bulk add failed:', e && e.message); }
+  }
+
+  return { ok: true, added, duplicate, invalid, total: rows.length, crm_error: crmErr,
+           enriched, enrich_pending: enrichPending, report };
 }
 
 // Seed the default categories if the table is empty (defensive — the schema and
