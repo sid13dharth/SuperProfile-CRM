@@ -68,7 +68,7 @@ the post, and a button into that creator's videos in the CRM.
 
 Buttons change with the lead:
 
-- **Open Conversation** — they've replied; opens the thread in the CRM
+- **Open Conversation** — they've replied; opens the thread in the Unibox
 - **Open in CRM** — no reply yet; opens their record
 - **+ Add lead** — not in the CRM; opens the add form, username pre-filled
 - **+ Add email** — in the CRM but no email on file; type it into the panel
