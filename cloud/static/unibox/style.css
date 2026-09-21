@@ -327,6 +327,37 @@ a.chip.social:hover { text-decoration: underline; }
 .note .meta { color: var(--muted); font-size: 11px; margin-top: 3px; }
 .activity-row { font-size: 12px; color: var(--muted); padding: 3px 0; }
 .drawer-foot { border-top: 1px solid var(--border); padding: 12px 20px; }
+.sched-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.cc-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.cc-row label { font-size: 12px; font-weight: 700; color: var(--muted); width: 28px; }
+.cc-row input {
+  flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text); padding: 7px 11px; font: inherit; font-size: 13px; outline: none;
+}
+.cc-row input:focus { border-color: var(--accent); }
+.note-btn.on { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+/* Copied recipients on a queued reply — they go out with it, so they belong
+   on the card next to the text. */
+.sched-item .cc { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.sched-item .cc b { color: var(--text); }
+.sched-row input[type="datetime-local"] {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); padding: 7px 10px; font: inherit; font-size: 13px;
+}
+/* A reply waiting to go out, shown at the top of the thread it belongs to.
+   Amber rather than a neutral card: it is a thing that will act on its own
+   unless somebody stops it. */
+.sched-item {
+  border: 1px solid var(--bd-orange); background: var(--tint-orange);
+  border-radius: var(--radius); padding: 10px 12px; margin-bottom: 14px;
+}
+.sched-item .meta { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.sched-item .meta b { color: var(--orange); }
+.sched-item .msg-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.5; }
+.sched-item .acts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.sched-item.held { border-color: var(--bd-red); background: var(--tint-red); }
+.sched-item.held .meta b { color: var(--red); }
+.sched-item .why { font-size: 12px; color: var(--text); margin-bottom: 6px; }
 .drawer-foot textarea {
   width: 100%; min-height: 170px; max-height: 45vh; background: var(--bg);
   border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px;
@@ -528,6 +559,12 @@ body.has-rail #rightbar {
   overflow-y: auto; overflow-x: hidden;
 }
 body.has-rail #app { margin-right: 66px; }
+/* The rail is fixed at right:0 above the drawer (z-index 60 vs 50), so a
+   drawer opening to right:0 slides its last 66px underneath it and clips the
+   message text. #app got this margin during the retheme; the drawer did not.
+   Stop it where the rail begins, and leave room on narrow screens. */
+body.has-rail #drawer { max-width: calc(96vw - 66px); }
+body.has-rail #drawer.open { right: 66px; }
 .rb-item {
   display: flex; flex-direction: column; align-items: center; gap: 3px;
   width: 60px; padding: 7px 1px; background: none; border: 1px solid transparent;

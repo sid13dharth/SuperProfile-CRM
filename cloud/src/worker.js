@@ -592,6 +592,7 @@ function entryDict(row, crmUrl) {
     ig_avg_views_10: row.ig_avg_views_10 === null || row.ig_avg_views_10 === undefined ? null : row.ig_avg_views_10,
     ig_checked_at: row.ig_checked_at || '',
     ig_status: row.ig_status || '',
+    ig_error: row.ig_error || '',
     ig_bio: row.ig_bio || '',
     ig_link: row.ig_link || '',
     ig_link_domain: row.ig_link_domain || '',
@@ -745,6 +746,116 @@ async function pushEntryToConversation(env, entryId, body) {
 }
 
 /* ── API ───────────────────────────────────────────────────── */
+
+/* One reply, actually sent. Shared by /api/lead/reply and the cron that drains
+   scheduled_replies. The thread's latest message is resolved HERE, at send
+   time, so a reply that waited threads onto whatever arrived while it waited
+   instead of onto a stale message. */
+async function sendReplyNow(env, key, text, user, cc = '', bcc = '') {
+  const i = key.indexOf('|');
+  const campaignId = key.slice(0, i), leadEmail = key.slice(i + 1);
+  const last = await env.DB.prepare(`SELECT id, subject, eaccount FROM emails WHERE campaign_id=? AND lead_email=? ORDER BY timestamp_email DESC LIMIT 1`).bind(campaignId, leadEmail).first();
+  if (!last) throw new ApiError(404, 'No conversation found');
+  let subject = last.subject || '';
+  if (!subject.toLowerCase().startsWith('re:')) subject = 'Re: ' + subject;
+  const convRow = await env.DB.prepare('SELECT eaccount, ws FROM conversations WHERE key=?').bind(key).first();
+  const eaccount = (convRow && convRow.eaccount) || last.eaccount;
+  if (!eaccount) throw new ApiError(400, 'No sending account known for this thread');
+  const wsId = (convRow && convRow.ws) || 1;
+  const wsApiKey = await wsKey(env, wsId);
+  let sent;
+  try {
+    // Only sent when set — an empty list is not the same as no key at all.
+    const payload = {
+      reply_to_uuid: last.id, eaccount, subject,
+      body: { html: `<div>${replyToHtml(text)}</div>`, text: replyToPlain(text) },
+    };
+    if (cc) payload.cc_address_email_list = cc;
+    if (bcc) payload.bcc_address_email_list = bcc;
+    sent = await instantlyPost(env, '/emails/reply', payload, wsApiKey);
+  } catch (e) { throw new ApiError(502, `Instantly reply failed: ${e.message}`); }
+  if (sent && sent.id) {
+    if (!sent.campaign_id) sent.campaign_id = campaignId;
+    if (!sent.lead) sent.lead = leadEmail;
+    sent.ue_type = 3; // a reply sent from the Unibox is a MANUAL reply — mark it so bucketing counts it as answered
+    await emailUpsertStmt(env, sent, wsId).run();
+  }
+  await recomputeConversations(env, [`${campaignId}|${leadEmail}`]);
+  await touchConv(env, key, user, 'reply_sent', text.slice(0, 80));
+  await relinkConv(env, key);
+  return { ok: true };
+}
+
+/* "a@b.com, c@d.com" -> "a@b.com,c@d.com", the shape Instantly stores.
+   Anything that is not an address is refused rather than passed on: a
+   silently dropped recipient is the failure mode worth spending a 400 on. */
+function emailList(raw, what) {
+  const parts = String(raw || '').split(/[,;\s]+/).map(x => x.trim()).filter(Boolean);
+  for (const p of parts) {
+    if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(p)) throw new ApiError(400, what + ': "' + p + '" is not an email address');
+  }
+  if (parts.length > 20) throw new ApiError(400, what + ': at most 20 addresses');
+  return parts.join(',');
+}
+
+/* What actually happened in a batch. The old reporting counted ATTEMPTS and
+   called them updates, so 50 failures read as "50 leads updated" — which is
+   how 180 consecutive failures went unnoticed for six days. */
+function igSummary(outcomes) {
+  const counts = {};
+  for (const o of outcomes) counts[o.status] = (counts[o.status] || 0) + 1;
+  const firstErr = (outcomes.find(o => o.status === 'error' && o.error) || {}).error || '';
+  return {
+    counts,
+    ok: counts.ok || 0,
+    failed: counts.error || 0,
+    notfound: counts.notfound || 0,
+    private: counts.private || 0,
+    error_sample: firstErr,
+  };
+}
+
+// Newest message FROM the lead on a thread (ue_type 2 is inbound).
+async function latestLeadMsgAt(env, key) {
+  const i = key.indexOf('|');
+  const row = await env.DB.prepare(
+    'SELECT MAX(timestamp_email) t FROM emails WHERE campaign_id=? AND lead_email=? AND ue_type=2')
+    .bind(key.slice(0, i), key.slice(i + 1)).first();
+  return (row && row.t) || '';
+}
+
+function userName(user) {
+  return (user && (user.display_name || user.username)) || '';
+}
+
+/* Drain the due queue. Bounded per run: each send is an Instantly call plus
+   its follow-up writes, and this shares its invocation with the sync. */
+const SCHED_BATCH = 15;
+async function runScheduledReplies(env) {
+  const { results: due } = await env.DB.prepare(
+    "SELECT * FROM scheduled_replies WHERE status='pending' AND send_at <= ? ORDER BY send_at LIMIT ?")
+    .bind(nowIso(), SCHED_BATCH).all();
+  for (const row of due) {
+    try {
+      // Held, not sent, if the lead has said something since it was written.
+      const latest = await latestLeadMsgAt(env, row.lead_key);
+      if (latest && latest > (row.seen_msg_at || '')) {
+        await env.DB.prepare("UPDATE scheduled_replies SET status='held' WHERE id=?").bind(row.id).run();
+        continue;
+      }
+      await sendReplyNow(env, row.lead_key, row.text, { display_name: row.created_by }, row.cc || '', row.bcc || '');
+      await env.DB.prepare("UPDATE scheduled_replies SET status='sent', sent_at=?, error='' WHERE id=?")
+        .bind(nowIso(), row.id).run();
+    } catch (e) {
+      /* Three tries, then it stops and shows the error in the thread. Retrying
+         forever would quietly hide a broken sending account. */
+      const n = (row.attempts || 0) + 1;
+      await env.DB.prepare('UPDATE scheduled_replies SET attempts=?, error=?, status=? WHERE id=?')
+        .bind(n, String((e && e.message) || e).slice(0, 300), n >= 3 ? 'failed' : 'pending', row.id).run();
+    }
+  }
+  if (due.length) await bumpVersion(env);
+}
 
 async function handleApi(request, env, url) {
   const path = url.pathname;
@@ -1536,7 +1647,7 @@ async function handleApi(request, env, url) {
     const { results: rows } = await env.DB.prepare(
       `SELECT * FROM entries WHERE id IN (${qs})`).bind(...ids).all();
     const crmUrl = env.CRM_URL || '';
-    return json({ done: outcomes.length, outcomes, entries: rows.map(r => entryDict(r, crmUrl)) });
+    return json({ done: outcomes.length, outcomes, summary: igSummary(outcomes), entries: rows.map(r => entryDict(r, crmUrl)) });
   }
 
   // One bounded step of the never-enriched backlog. The client polls this so
@@ -1557,7 +1668,8 @@ async function handleApi(request, env, url) {
     const outcomes = await enrichRows(env, results);
     await bumpVersion(env);
     const remaining = await remainingOf();
-    return json({ done: outcomes.length, outcomes, remaining, finished: remaining === 0, scope: engagedOnly ? 'engaged' : 'all' });
+    return json({ done: outcomes.length, outcomes, summary: igSummary(outcomes), remaining,
+                  finished: remaining === 0, scope: engagedOnly ? 'engaged' : 'all' });
   }
 
   // How much backlog is left, for the confirm dialog's call estimate.
@@ -1976,7 +2088,10 @@ async function handleApi(request, env, url) {
       .map(([cid, emails]) => ({ campaign_id: cid, campaign_name: names[cid] || '(no campaign)', emails, last_msg_at: emails[emails.length - 1].timestamp_email }))
       .filter(t => !currentLatest || t.last_msg_at < currentLatest)
       .sort((a, b) => (a.last_msg_at < b.last_msg_at ? 1 : -1));
-    return json({ emails: cur, notes: notesRes.results, activity: actRes.results, other_threads });
+    const { results: scheduled } = await env.DB.prepare(
+      `SELECT id, text, send_at, status, created_by, created_at, error, cc, bcc FROM scheduled_replies
+        WHERE lead_key=? AND status IN ('pending','held','failed') ORDER BY send_at`).bind(key).all();
+    return json({ emails: cur, notes: notesRes.results, activity: actRes.results, other_threads, scheduled });
   }
 
   // Full lead detail for the in-app conversation popup (READ-ONLY): the entire
@@ -2175,34 +2290,57 @@ async function handleApi(request, env, url) {
     const user = await requireUser(env, request);
     const text = (body.text || '').trim();
     if (!text) throw new ApiError(400, 'Empty reply');
+    const cc = emailList(body.cc, 'CC'), bcc = emailList(body.bcc, 'BCC');
+    return json(await sendReplyNow(env, body.key || '', text, user, cc, bcc));
+  }
+
+  /* Park a reply for later. send_at arrives as ISO UTC; the picker does the
+     IST conversion, because every other date in this app is IST. */
+  if (path === '/api/lead/reply/schedule' && method === 'POST') {
+    const user = await requireUser(env, request);
+    const text = (body.text || '').trim();
+    if (!text) throw new ApiError(400, 'Empty reply');
     const key = body.key || '';
-    const i = key.indexOf('|');
-    const campaignId = key.slice(0, i), leadEmail = key.slice(i + 1);
-    const last = await env.DB.prepare(`SELECT id, subject, eaccount FROM emails WHERE campaign_id=? AND lead_email=? ORDER BY timestamp_email DESC LIMIT 1`).bind(campaignId, leadEmail).first();
-    if (!last) throw new ApiError(404, 'No conversation found');
-    let subject = last.subject || '';
-    if (!subject.toLowerCase().startsWith('re:')) subject = 'Re: ' + subject;
-    const convRow = await env.DB.prepare('SELECT eaccount, ws FROM conversations WHERE key=?').bind(key).first();
-    const eaccount = (convRow && convRow.eaccount) || last.eaccount;
-    if (!eaccount) throw new ApiError(400, 'No sending account known for this thread');
-    const wsId = (convRow && convRow.ws) || 1;
-    const wsApiKey = await wsKey(env, wsId);
-    let sent;
-    try {
-      sent = await instantlyPost(env, '/emails/reply', {
-        reply_to_uuid: last.id, eaccount, subject,
-        body: { html: `<div>${replyToHtml(text)}</div>`, text: replyToPlain(text) },
-      }, wsApiKey);
-    } catch (e) { throw new ApiError(502, `Instantly reply failed: ${e.message}`); }
-    if (sent && sent.id) {
-      if (!sent.campaign_id) sent.campaign_id = campaignId;
-      if (!sent.lead) sent.lead = leadEmail;
-      sent.ue_type = 3; // a reply sent from the Unibox is a MANUAL reply — mark it so bucketing counts it as answered
-      await emailUpsertStmt(env, sent, wsId).run();
-    }
-    await recomputeConversations(env, [`${campaignId}|${leadEmail}`]);
-    await touchConv(env, key, user, 'reply_sent', text.slice(0, 80));
-    await relinkConv(env, key);
+    if (!key.includes('|')) throw new ApiError(400, 'Bad conversation key');
+    const when = new Date(body.send_at || '');
+    if (isNaN(when)) throw new ApiError(400, 'Bad send time');
+    if (when.getTime() < Date.now() + 30000) throw new ApiError(400, 'Pick a time at least a minute from now');
+    if (when.getTime() > Date.now() + 366 * 86400000) throw new ApiError(400, 'That is more than a year away');
+    const conv = await env.DB.prepare('SELECT ws FROM conversations WHERE key=?').bind(key).first();
+    if (!conv) throw new ApiError(404, 'Conversation not found');
+    /* Remember how far the thread had got. If the lead speaks again before this
+       falls due, it is held rather than answering something they have already
+       moved past. */
+    const seen = await latestLeadMsgAt(env, key);
+    const cc = emailList(body.cc, 'CC'), bcc = emailList(body.bcc, 'BCC');
+    await env.DB.prepare(
+      `INSERT INTO scheduled_replies (lead_key, ws, text, send_at, status, created_by, created_at, seen_msg_at, cc, bcc)
+       VALUES (?,?,?,?,'pending',?,?,?,?,?)`)
+      .bind(key, conv.ws || 1, text, when.toISOString(), userName(user), nowIso(), seen, cc, bcc).run();
+    await touchConv(env, key, user, 'reply_scheduled', when.toISOString());
+    return json({ ok: true, send_at: when.toISOString() });
+  }
+
+  // Drop a pending or held reply. Anyone on the team can act on either.
+  if (path === '/api/lead/reply/cancel' && method === 'POST') {
+    const user = await requireUser(env, request);
+    const row = await env.DB.prepare('SELECT * FROM scheduled_replies WHERE id=?').bind(Number(body.id) || 0).first();
+    if (!row) throw new ApiError(404, 'No such scheduled reply');
+    if (row.status !== 'pending' && row.status !== 'held') throw new ApiError(400, 'That reply is already ' + row.status);
+    await env.DB.prepare("UPDATE scheduled_replies SET status='cancelled' WHERE id=?").bind(row.id).run();
+    await touchConv(env, row.lead_key, user, 'reply_unscheduled', row.send_at);
+    return json({ ok: true });
+  }
+
+  // Release a held (or still-pending) reply right now, as written.
+  if (path === '/api/lead/reply/send-now' && method === 'POST') {
+    const user = await requireUser(env, request);
+    const row = await env.DB.prepare('SELECT * FROM scheduled_replies WHERE id=?').bind(Number(body.id) || 0).first();
+    if (!row) throw new ApiError(404, 'No such scheduled reply');
+    if (row.status !== 'pending' && row.status !== 'held') throw new ApiError(400, 'That reply is already ' + row.status);
+    await sendReplyNow(env, row.lead_key, row.text, user, row.cc || '', row.bcc || '');
+    await env.DB.prepare("UPDATE scheduled_replies SET status='sent', sent_at=?, error='' WHERE id=?")
+      .bind(nowIso(), row.id).run();
     return json({ ok: true });
   }
 
@@ -2752,5 +2890,8 @@ export default {
   async scheduled(event, env, ctx) {
     try { await runFullSync(env); }
     catch (e) { console.log('cron sync failed:', e && e.message); }
+    // Its own try: a sync failure must not strand replies that are due.
+    try { await runScheduledReplies(env); }
+    catch (e) { console.log('scheduled replies failed:', e && e.message); }
   },
 };

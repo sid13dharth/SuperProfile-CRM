@@ -140,10 +140,23 @@
   </div>
   <div class="drawer-body" id="thread"></div>
   <div class="drawer-foot">
+    <!-- Above the body, where mail clients put them. Hidden until asked for:
+         almost every reply copies nobody. -->
+    <div class="cc-row" id="cc-row" hidden>
+      <label for="cc-input">Cc</label>
+      <input id="cc-input" type="text" autocomplete="off" placeholder="name@example.com, another@example.com">
+    </div>
+    <div class="cc-row" id="bcc-row" hidden>
+      <label for="bcc-input">Bcc</label>
+      <input id="bcc-input" type="text" autocomplete="off" placeholder="name@example.com">
+    </div>
     <textarea id="reply-text" placeholder="Type a reply (sends via Instantly) — or save it as an internal note…"></textarea>
     <div class="foot-row">
       <button class="send" id="send-btn">Send reply</button>
       <button class="note-btn" id="note-btn">📝 Save as note</button>
+      <button class="note-btn" id="sched-btn">🕑 Send later</button>
+      <button class="note-btn" id="cc-btn">Cc</button>
+      <button class="note-btn" id="bcc-btn">Bcc</button>
       <div class="dd" id="tpl-dd">
         <button class="note-btn" id="tpl-btn">📋 Templates ▾</button>
         <div class="dd-menu up" id="tpl-menu"></div>
@@ -153,6 +166,13 @@
         <div class="dd-menu up" id="links-menu"></div>
       </div>
       <span class="foot-hint">Replies go out from the same inbox the campaign uses. · Select text + Ctrl+K to add a link.</span>
+    </div>
+    <!-- Hidden until "Send later" is clicked, so the common case stays one button. -->
+    <div class="sched-row" id="sched-row" hidden>
+      <input type="datetime-local" id="sched-at">
+      <button class="send" id="sched-confirm">Schedule</button>
+      <button class="note-btn" id="sched-cancel">Cancel</button>
+      <span class="foot-hint" id="sched-tz"></span>
     </div>
   </div>
 </div>

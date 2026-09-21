@@ -163,9 +163,9 @@ export async function fetchIgStats(env, handle, knownUserId) {
   const patch = {
     ig_user_id: knownUserId || '', ig_followers: null, ig_last_post_at: '',
     ig_avg_views_10: null, ig_reels_used: null, ig_checked_at: new Date().toISOString(), ig_status: 'ok',
-    ig_bio: '', ig_link: '', ig_link_domain: '',
+    ig_bio: '', ig_link: '', ig_link_domain: '', ig_error: '',
   };
-  if (!handle) { patch.ig_status = 'notfound'; return patch; }
+  if (!handle) { patch.ig_status = 'notfound'; patch.ig_error = 'no handle on the lead'; return patch; }
 
   // 1. profile → followers + user id
   let u = {};
@@ -173,6 +173,7 @@ export async function fetchIgStats(env, handle, knownUserId) {
     u = pickUser(await hikerGet(env, '/v1/user/by/username', { username: handle }));
   } catch (e) {
     patch.ig_status = e.kind === 'notfound' ? 'notfound' : 'error';
+    patch.ig_error = String(e.message || e).slice(0, 300);
     return patch;
   }
   patch.ig_followers = followerCountOf(u);
@@ -188,7 +189,7 @@ export async function fetchIgStats(env, handle, knownUserId) {
     patch.ig_status = 'private';
     return patch;
   }
-  if (!patch.ig_user_id) { patch.ig_status = 'error'; return patch; }
+  if (!patch.ig_user_id) { patch.ig_status = 'error'; patch.ig_error = 'no user id in the profile response'; return patch; }
 
   // 2. reels → last post date + average views
   let clips = [];
@@ -197,6 +198,7 @@ export async function fetchIgStats(env, handle, knownUserId) {
   } catch (e) {
     // Followers already landed; report the partial rather than losing it.
     patch.ig_status = e.kind === 'notfound' ? 'notfound' : 'error';
+    patch.ig_error = String(e.message || e).slice(0, 300);
     return patch;
   }
 
@@ -223,14 +225,15 @@ export async function fetchIgStats(env, handle, knownUserId) {
 export function igUpdateStmt(env, id, patch) {
   return env.DB.prepare(
     `UPDATE entries SET ig_user_id=?, ig_followers=?, ig_last_post_at=?, ig_avg_views_10=?,
-       ig_reels_used=?, ig_checked_at=?, ig_status=?, ig_bio=?, ig_bio_lc=?, ig_link=?, ig_link_domain=? WHERE id=?`)
+       ig_reels_used=?, ig_checked_at=?, ig_status=?, ig_bio=?, ig_bio_lc=?, ig_link=?, ig_link_domain=?,
+       ig_error=? WHERE id=?`)
     .bind(patch.ig_user_id, patch.ig_followers, patch.ig_last_post_at, patch.ig_avg_views_10,
           patch.ig_reels_used, patch.ig_checked_at, patch.ig_status,
           patch.ig_bio || '',
           // Folded here, not in SQL: JavaScript handles non-ASCII, SQLite
           // lower() does not, and bio search matches this column.
           (patch.ig_bio || '').toLowerCase(),
-          patch.ig_link || '', patch.ig_link_domain || '', id);
+          patch.ig_link || '', patch.ig_link_domain || '', patch.ig_error || '', id);
 }
 
 /* Enrich a set of rows [{id, handle_norm, ig_user_id}] with bounded
@@ -244,9 +247,12 @@ export async function enrichRows(env, rows) {
       slice.map(r => fetchIgStats(env, r.handle_norm, r.ig_user_id).catch(() => ({
         ig_user_id: r.ig_user_id || '', ig_followers: null, ig_last_post_at: '', ig_avg_views_10: null,
         ig_reels_used: null, ig_checked_at: new Date().toISOString(), ig_status: 'error',
-        ig_bio: '', ig_link: '', ig_link_domain: '',
+        ig_bio: '', ig_link: '', ig_link_domain: '', ig_error: 'enrichment threw before it could report',
       }))));
-    slice.forEach((r, k) => { stmts.push(igUpdateStmt(env, r.id, patches[k])); out.push({ id: r.id, status: patches[k].ig_status }); });
+    slice.forEach((r, k) => {
+      stmts.push(igUpdateStmt(env, r.id, patches[k]));
+      out.push({ id: r.id, status: patches[k].ig_status, error: patches[k].ig_error || '' });
+    });
   }
   if (stmts.length) await env.DB.batch(stmts);
   return out;

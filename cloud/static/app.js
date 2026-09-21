@@ -901,7 +901,7 @@ function igCell(e, c) {
     if (!e.ig_checked_at) return '<span class="ph" title="Not fetched yet">—</span>';
     const why = e.ig_status === 'private' ? 'Private account'
       : e.ig_status === 'notfound' ? 'Handle not found on Instagram'
-      : e.ig_status === 'error' ? 'Fetch failed — try refreshing'
+      : e.ig_status === 'error' ? ('Fetch failed' + (e.ig_error ? ' — ' + e.ig_error : ' — try refreshing'))
       : c.f === 'ig_avg_views_10' ? 'No reels found'
       : c.f === 'ig_checked_at' ? 'Never enriched'
       : 'No data';
@@ -1402,19 +1402,33 @@ async function igRefreshPage() {
   const ids = igPageIds();
   const prog = $('ig-prog');
   try {
-    let done = 0;
+    let done = 0, ok = 0, failed = 0, sample = '';
     // Chunked to the server's per-request cap.
     for (let i = 0; i < ids.length; i += 50) {
       prog.textContent = `Fetching ${done} / ${ids.length}…`;
       const r = await api('/api/entries/ig-refresh', { method: 'POST', body: { ids: ids.slice(i, i + 50) } });
       done += r.done || 0;
+      if (r.summary) {
+        ok += r.summary.ok; failed += r.summary.failed;
+        if (!sample && r.summary.error_sample) sample = r.summary.error_sample;
+      }
       for (const en of r.entries || []) {
         const k = state.entries.findIndex(x => x.id === en.id);
         if (k >= 0) { state.entries[k] = en; replaceRow(en.id, en); }
       }
     }
-    prog.textContent = `Done — ${done} lead${done === 1 ? '' : 's'} updated.`;
-    toast('Instagram data updated');
+    /* Say what actually happened. The old line counted attempts and called
+       them updates, so a batch where every single fetch failed still read
+       "50 leads updated" — which is how a dead API key went unnoticed for
+       six days and 180 failures. */
+    if (failed) {
+      prog.innerHTML = `<span class="pg-err">${ok} updated · <b>${failed} failed</b>`
+        + (sample ? ` — ${esc(sample)}` : '') + '</span>';
+      toast(`${failed} of ${done} failed to fetch`, true);
+    } else {
+      prog.textContent = `Done — ${ok} lead${ok === 1 ? '' : 's'} updated.`;
+      toast('Instagram data updated');
+    }
   } catch (e) { prog.innerHTML = `<span class="pg-err">${esc(e.message)}</span>`; }
   finally { igBusy = false; }
 }
@@ -1422,16 +1436,37 @@ async function igRefreshPage() {
 async function igBackfill(scope) {
   if (igBusy) return; igBusy = true;
   const prog = $('ig-prog');
-  let done = 0;
+  let done = 0, ok = 0, failed = 0, sample = '', stopped = false;
   try {
     for (;;) {
       const r = await api('/api/entries/ig-backfill', { method: 'POST', body: { scope } });
       done += r.done || 0;
-      prog.textContent = `Fetched ${done}… ${r.remaining.toLocaleString()} left.`;
+      if (r.summary) {
+        ok += r.summary.ok; failed += r.summary.failed;
+        if (!sample && r.summary.error_sample) sample = r.summary.error_sample;
+      }
+      prog.textContent = `Fetched ${ok}` + (failed ? ` · ${failed} failed` : '')
+        + `… ${r.remaining.toLocaleString()} left.`;
+      /* Stop rather than burn the rest of the backlog against an API that is
+         refusing everything — out of credit, bad key, outage. Each lead costs
+         two calls, so a silent run through 8,000 of them is real money. */
+      if (failed >= 20 && ok === 0) {
+        stopped = true;
+        prog.innerHTML = '<span class="pg-err">Stopped — every fetch is failing'
+          + (sample ? ' — ' + esc(sample) : '') + '</span>';
+        break;
+      }
       if (r.finished || !r.done) break;
       if (!$('ig-bg').classList.contains('open')) break;   // closing the modal stops the spend
     }
-    prog.textContent = `Done — ${done} lead${done === 1 ? '' : 's'} enriched.`;
+    // The circuit-breaker already explained itself; don't overwrite that.
+    if (stopped) { /* message already on screen */ }
+    else if (failed) {
+      prog.innerHTML = `<span class="pg-err">${ok} enriched · <b>${failed} failed</b>`
+        + (sample ? ` — ${esc(sample)}` : '') + '</span>';
+    } else {
+      prog.textContent = `Done — ${ok} lead${ok === 1 ? '' : 's'} enriched.`;
+    }
     await loadEntries();
   } catch (e) { prog.innerHTML = `<span class="pg-err">${esc(e.message)}</span>`; }
   finally { igBusy = false; }

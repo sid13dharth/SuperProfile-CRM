@@ -1,0 +1,11 @@
+-- Why an enrichment failed.
+--
+-- hiker.js already builds a precise message ("/v1/user/by/username → 402:
+-- Top up your account at https://hikerapi.com/billing") and then throws it
+-- away: only ig_status='error' was ever stored. That cost six days — 180
+-- consecutive failures between 2026-09-16 and 2026-09-21 that nobody could
+-- diagnose from the data, because the reason existed only inside a stack that
+-- had already unwound.
+--
+-- Empty on success, so a lead that recovers stops showing an old reason.
+ALTER TABLE entries ADD COLUMN ig_error TEXT NOT NULL DEFAULT '';

@@ -160,10 +160,25 @@ function filterParams() {
   return p.toString();
 }
 
+/* Responses can land out of order. There are 17 call sites plus a poll every
+   8 seconds, so refreshes overlap routinely, and the unfiltered list (5,666
+   rows) is reliably slower than a filtered one (89). Without a guard, a
+   refresh issued BEFORE you picked a filter can land AFTER it and put the
+   whole list back — leaving the dropdown showing a filter that is not
+   actually applied. Only the newest request may write to state. */
+let refreshSeq = 0;
 async function refresh() {
+  const mine = ++refreshSeq;
+  let next;
   try {
-    state = await api('/api/state?' + filterParams());
-  } catch (e) { return; }
+    next = await api('/api/state?' + filterParams());
+  } catch (e) {
+    // Swallowing this made a failed request look like a filter that did nothing.
+    if (mine === refreshSeq) toast('Could not load leads — ' + e.message, true);
+    return;
+  }
+  if (mine !== refreshSeq) return;   // a newer refresh is already in flight
+  state = next;
   if ($('status-filter').value !== 'rates_quoted') rateFilter = '';
   renderCampaigns();
   renderStatusLabelFilters();
@@ -805,6 +820,34 @@ function linkifyText(text) {
   return out.replace(/\n/g, '<br>');
 }
 
+/* One queued reply. Three shapes: waiting, held because the lead wrote back
+   before it was due, or failed after three attempts. */
+function renderScheduled(sc) {
+  const held = sc.status === 'held', failed = sc.status === 'failed';
+  const who = sc.created_by ? esc(sc.created_by) : "someone";
+  let head, why = "";
+  if (held) {
+    head = "⏸ Held — not sent";
+    why = "They replied after " + who + " wrote this, so it was not sent. Read their message first, then send it as-is, edit it, or discard it.";
+  } else if (failed) {
+    head = "⚠ Failed to send";
+    why = "Tried three times and gave up. " + esc(sc.error || "");
+  } else {
+    head = "🕑 Scheduled — sends " + fmtDate(sc.send_at);
+  }
+  return `<div class="sched-item ${held || failed ? "held" : ""}" data-sched="${sc.id}">`
+    + `<div class="meta"><b>${head}</b> · written by ${who}</div>`
+    + (why ? `<div class="why">${why}</div>` : "")
+    + (sc.cc ? `<div class="cc"><b>Cc</b> ${esc(sc.cc)}</div>` : "")
+    + (sc.bcc ? `<div class="cc"><b>Bcc</b> ${esc(sc.bcc)}</div>` : "")
+    + `<div class="msg-text">${esc(sc.text)}</div>`
+    + `<div class="acts">`
+    +   `<button class="sbtn" data-sched-send="${sc.id}">Send now</button>`
+    +   `<button class="sbtn" data-sched-edit="${sc.id}">Edit draft</button>`
+    +   `<button class="sbtn" data-sched-cancel="${sc.id}">Discard</button>`
+    + `</div></div>`;
+}
+
 // Render one email as a chat bubble (shared by the current thread and the
 // "Older campaigns" panel).
 function renderMsg(m) {
@@ -825,6 +868,12 @@ async function loadThread(key, silent) {
   renderDrawerHead();
 
   let html = '';
+
+  /* Anything queued for this thread goes first, above the newest message.
+     A reply that will send itself later is the most important thing on the
+     screen, and a HELD one needs a person to do something. */
+  for (const sc of (data.scheduled || [])) html += renderScheduled(sc);
+
   // Newest reply first.
   const emails = [...data.emails].reverse();
   for (const m of emails) html += renderMsg(m);
@@ -860,6 +909,42 @@ async function loadThread(key, silent) {
   }
 
   $('thread').innerHTML = html;
+
+  $('thread').querySelectorAll('[data-sched-send]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { await api('/api/lead/reply/send-now', { id: Number(b.dataset.schedSend) }); toast('Reply sent ✓'); }
+    catch (e) { toast(e.message, true); b.disabled = false; return; }
+    loadThread(openLeadKey, true);
+  });
+  $('thread').querySelectorAll('[data-sched-cancel]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { await api('/api/lead/reply/cancel', { id: Number(b.dataset.schedCancel) }); toast('Discarded'); }
+    catch (e) { toast(e.message, true); b.disabled = false; return; }
+    loadThread(openLeadKey, true);
+  });
+  /* Pull it back into the reply box to rework it. Discarding the queued copy
+     is the point — otherwise the old wording would still go out. */
+  $('thread').querySelectorAll('[data-sched-edit]').forEach(b => b.onclick = async () => {
+    const id = Number(b.dataset.schedEdit);
+    const sc = (data.scheduled || []).find(x => x.id === id);
+    if (!sc) return;
+    b.disabled = true;
+    try { await api('/api/lead/reply/cancel', { id }); }
+    catch (e) { toast(e.message, true); b.disabled = false; return; }
+    $('reply-text').value = sc.text;
+    // Bring the recipients back with the text, or they would be quietly dropped.
+    resetCc();
+    for (const [w, v] of [['cc', sc.cc], ['bcc', sc.bcc]]) {
+      if (!v) continue;
+      $(w + '-input').value = v;
+      $(w + '-row').hidden = false;
+      $(w + '-btn').classList.add('on');
+    }
+    $('reply-text').focus();
+    toast('Draft is back in the reply box — it will not send on its own now');
+    loadThread(openLeadKey, true);
+  });
+
   const tgl = document.getElementById('older-toggle');
   if (tgl) tgl.onclick = () => {
     const w = document.getElementById('older-wrap');
@@ -898,13 +983,76 @@ async function sendReply() {
   const btn = $('send-btn');
   btn.disabled = true; btn.textContent = 'Sending…';
   try {
-    await api('/api/lead/reply', { key: openLeadKey, text });
+    await api('/api/lead/reply', { key: openLeadKey, text, cc: ccValue('cc'), bcc: ccValue('bcc') });
     $('reply-text').value = '';
+    resetCc();
     toast('Reply sent ✓');
   } catch (e) {
     toast(e.message, true);
   }
   btn.disabled = false; btn.textContent = 'Send reply';
+}
+
+/* The picker works in the browser's own timezone, which is what every other
+   time in this app is shown in; the label spells it out so nobody has to
+   guess. datetime-local values parse as local time, so toISOString() hands
+   the worker clean UTC. */
+/* Hiding a Cc/Bcc field CLEARS it. A recipient you cannot see must never be
+   on the message — that is the whole reason to be careful with Bcc. */
+function toggleCc(which) {
+  const row = $(which + '-row'), input = $(which + '-input'), btn = $(which + '-btn');
+  const show = row.hidden;
+  row.hidden = !show;
+  btn.classList.toggle('on', show);
+  if (!show) input.value = '';
+  else input.focus();
+}
+
+const ccValue = which => ($(which + '-input') && !$(which + '-row').hidden) ? $(which + '-input').value.trim() : '';
+
+function resetCc() {
+  for (const w of ['cc', 'bcc']) {
+    $(w + '-input').value = '';
+    $(w + '-row').hidden = true;
+    $(w + '-btn').classList.remove('on');
+  }
+}
+
+function openSchedule() {
+  const row = $('sched-row');
+  if (!row.hidden) { row.hidden = true; return; }
+  if (!$('reply-text').value.trim()) { toast('Write the reply first, then pick a time', true); return; }
+  const d = new Date(Date.now() + 3600000);
+  d.setSeconds(0, 0);
+  const pad = n => String(n).padStart(2, "0");
+  $('sched-at').value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    + `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  try {
+    $('sched-tz').textContent = 'Times are ' + Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch (e) { }
+  row.hidden = false;
+  $('sched-at').focus();
+}
+
+async function confirmSchedule() {
+  const text = $('reply-text').value.trim();
+  if (!text || !openLeadKey) return;
+  const raw = $('sched-at').value;
+  if (!raw) { toast('Pick a date and time', true); return; }
+  const when = new Date(raw);
+  if (isNaN(when)) { toast('That date did not parse', true); return; }
+  const btn = $('sched-confirm');
+  btn.disabled = true; btn.textContent = 'Scheduling…';
+  try {
+    await api('/api/lead/reply/schedule',
+      { key: openLeadKey, text, send_at: when.toISOString(), cc: ccValue('cc'), bcc: ccValue('bcc') });
+    $('reply-text').value = '';
+    resetCc();
+    $('sched-row').hidden = true;
+    toast('Scheduled for ' + fmtDate(when.toISOString()) + ' ✓');
+    loadThread(openLeadKey, true);
+  } catch (e) { toast(e.message, true); }
+  btn.disabled = false; btn.textContent = 'Schedule';
 }
 
 async function addNote() {
@@ -1585,6 +1733,11 @@ document.addEventListener('DOMContentLoaded', () => {
   $('overlay').onclick = closeDrawer;
   $('d-close').onclick = closeDrawer;
   $('send-btn').onclick = sendReply;
+  $('sched-btn').onclick = openSchedule;
+  $('cc-btn').onclick = () => toggleCc('cc');
+  $('bcc-btn').onclick = () => toggleCc('bcc');
+  $('sched-confirm').onclick = confirmSchedule;
+  $('sched-cancel').onclick = () => { $('sched-row').hidden = true; };
   $('note-btn').onclick = addNote;
   $('reply-text').addEventListener('keydown', insertLinkShortcut);
   $('sync-now').onclick = async () => { await api('/api/sync', { ws: activeWs }); toast('Sync started…'); };
