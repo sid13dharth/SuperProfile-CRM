@@ -62,6 +62,7 @@ let team = [];
 let templates = [];
 let links = [];
 const selectedCampaigns = new Set();
+const selectedCats = new Set();
 
 /* ── API helper ─────────────────────────────────────── */
 async function api(path, body, method) {
@@ -152,8 +153,7 @@ function filterParams() {
   if ($('poc-filter').value) p.set('poc', $('poc-filter').value);
   if ($('status-filter').value) p.set('status', $('status-filter').value);
   if ($('label-filter').value) p.set('label', $('label-filter').value);
-  const cf = $('cat-filter');
-  if (cf && cf.value) p.set('category', cf.value);
+  if (selectedCats.size) p.set('category', [...selectedCats].join('|'));
   if ($('search').value.trim()) p.set('q', $('search').value.trim());
   if ($('date-from').value) p.set('date_from', $('date-from').value);
   if ($('date-to').value) p.set('date_to', $('date-to').value);
@@ -265,16 +265,49 @@ function renderStatusLabelFilters() {
     state.labels.map(l => `<option value="${escAttr(l.name)}">Label: ${esc(l.name)}</option>`).join('');
   lf.value = curL;
 
-  /* Categories come from the CRM side and are listed by what actually
-     appears on leads with a conversation — offering the curated list here
-     would hide most of them, since that list holds 4 of the 37 in use. */
-  const cf = $('cat-filter');
-  if (cf) {
-    const curC = cf.value;
-    cf.innerHTML = '<option value="">Category: any</option>' +
-      (state.categories || []).map(c => `<option value="${escAttr(c)}">Category: ${esc(c)}</option>`).join('');
-    cf.value = curC;
-  }
+  renderCatFilter();
+}
+
+function catBtnLabel() {
+  if (!selectedCats.size) return 'Category: any ▾';
+  if (selectedCats.size === 1) return 'Category: ' + [...selectedCats][0] + ' ▾';
+  return selectedCats.size + ' categories ▾';
+}
+
+/* Same shape as the campaigns dropdown: checkboxes, a search box once the
+   list gets long, and a clear. Categories are the CRM's curated list, so a
+   selection stays valid even when the visible leads change. */
+function renderCatFilter() {
+  const btn = $('cat-btn'), menu = $('cat-menu');
+  if (!btn || !menu) return;
+  btn.textContent = catBtnLabel();
+  btn.classList.toggle('active', selectedCats.size > 0);
+  const prev = menu.querySelector('.dd-search') ? menu.querySelector('.dd-search').value : '';
+  const cats = state.categories || [];
+  menu.innerHTML =
+    '<input class="dd-search" placeholder="🔎 Search categories…">' +
+    '<button class="dd-clear">Any category (clear selection)</button>' +
+    cats.map(c => `<label>
+      <input type="checkbox" value="${escAttr(c)}" ${selectedCats.has(c) ? 'checked' : ''}>
+      ${esc(c)}</label>`).join('');
+  const search = menu.querySelector('.dd-search');
+  const applySearch = () => {
+    const v = search.value.trim().toLowerCase();
+    menu.querySelectorAll('label').forEach(lb => {
+      lb.style.display = lb.textContent.toLowerCase().includes(v) ? '' : 'none';
+    });
+  };
+  search.oninput = applySearch;
+  search.value = prev;
+  if (prev) applySearch();
+  menu.querySelector('.dd-clear').onclick = () => { selectedCats.clear(); refresh(); };
+  menu.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.onchange = () => {
+      if (cb.checked) selectedCats.add(cb.value);
+      else selectedCats.delete(cb.value);
+      refresh();
+    };
+  });
 }
 
 function renderTabs() {
@@ -634,6 +667,9 @@ function renderDealPanel(l) {
   if (l.status === 'closed') {
     if (l.deal_videos) rows.push(['Number of videos', l.deal_videos]);
     if (l.deal_budget) rows.push(['Budget', l.deal_budget]);
+    if (l.deal_referral_pct !== null && l.deal_referral_pct !== undefined && l.deal_referral_pct !== '')
+      rows.push(['Referral commission', l.deal_referral_pct + '%']);
+    if (l.deal_plan_access) rows.push(['Creator Plan access', l.deal_plan_access]);
     if (l.deal_deliverables) rows.push(['Other deliverables', l.deal_deliverables]);
   }
   if (l.status === 'failed') {
@@ -649,9 +685,23 @@ function renderDealPanel(l) {
   const panel = $('d-deal');
   if (!rows.length) { panel.style.display = 'none'; panel.innerHTML = ''; return; }
   panel.style.display = 'block';
-  panel.innerHTML = rows.map(([k, v]) =>
-    `<div class="deal-row"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('') +
-    `<button class="mini-edit" id="deal-edit">Edit details</button>`;
+  /* Collapsible, like Lead details above it. Collapsed by default: the head and
+     footer already reserve most of a short screen, and this box alone was ~110px
+     of it. The summary line keeps the figures one click away. */
+  let open = false;
+  try { open = localStorage.getItem('lg_deal_open') === '1'; } catch (e) {}
+  panel.className = 'deal-panel collapsible' + (open ? '' : ' closed');
+  panel.innerHTML =
+    `<div class="dp-head"><span class="caret">▾</span>Deal details · ${rows.length}</div>`
+    + '<div class="dp-body">'
+    + rows.map(([k, v]) => `<div class="deal-row"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')
+    + `<button class="mini-edit" id="deal-edit">Edit details</button>`
+    + '</div>';
+  panel.querySelector('.dp-head').onclick = () => {
+    const nowClosed = !panel.classList.contains('closed');
+    panel.classList.toggle('closed', nowClosed);
+    try { localStorage.setItem('lg_deal_open', nowClosed ? '0' : '1'); } catch (e) {}
+  };
   $('deal-edit').onclick = () => openStatusModal(currentLead().status, true);
 }
 
@@ -705,6 +755,11 @@ function openStatusModal(key, editing) {
     fields.innerHTML = `
       <label class="fld">Number of videos<input id="f-videos" value="${escAttr(l.deal_videos || '')}"></label>
       <label class="fld">Budget<input id="f-budget" value="${escAttr(l.deal_budget || '')}"></label>
+      <label class="fld">Referral commission (%)
+        <input id="f-referral" type="number" min="0" max="100" step="0.5" inputmode="decimal"
+               placeholder="e.g. 25" value="${escAttr(l.deal_referral_pct == null ? '' : l.deal_referral_pct)}"></label>
+      <label class="fld">Creator Plan access
+        <input id="f-plan" placeholder="e.g. 6 months" value="${escAttr(l.deal_plan_access || '')}"></label>
       <label class="fld">Other deliverables<textarea id="f-deliverables">${esc(l.deal_deliverables || '')}</textarea></label>`;
     $('sd-save').onclick = () => {
       closeStatusModal();
@@ -712,6 +767,8 @@ function openStatusModal(key, editing) {
         videos: $('f-videos').value.trim(),
         budget: $('f-budget').value.trim(),
         deliverables: $('f-deliverables').value.trim(),
+        referral_pct: $('f-referral').value.trim(),
+        plan_access: $('f-plan').value.trim(),
       });
     };
   } else if (st.form === 'rates') {
@@ -824,9 +881,17 @@ function linkifyText(text) {
    before it was due, or failed after three attempts. */
 function renderScheduled(sc) {
   const held = sc.status === 'held', failed = sc.status === 'failed';
+  /* 'sending' is a claimed row. It normally lasts under a second, so if you are
+     seeing one the worker died mid-send. Deliberately NOT retried on its own:
+     the message may already have gone out, and a duplicate is worse than a
+     late one. Someone has to decide. */
+  const sending = sc.status === 'sending';
   const who = sc.created_by ? esc(sc.created_by) : "someone";
   let head, why = "";
-  if (held) {
+  if (sending) {
+    head = "⚠ Interrupted mid-send";
+    why = "The send was interrupted. It may or may not have gone out — check the thread above before sending it again.";
+  } else if (held) {
     head = "⏸ Held — not sent";
     why = "They replied after " + who + " wrote this, so it was not sent. Read their message first, then send it as-is, edit it, or discard it.";
   } else if (failed) {
@@ -835,7 +900,7 @@ function renderScheduled(sc) {
   } else {
     head = "🕑 Scheduled — sends " + fmtDate(sc.send_at);
   }
-  return `<div class="sched-item ${held || failed ? "held" : ""}" data-sched="${sc.id}">`
+  return `<div class="sched-item ${held || failed || sending ? "held" : ""}" data-sched="${sc.id}">`
     + `<div class="meta"><b>${head}</b> · written by ${who}</div>`
     + (why ? `<div class="why">${why}</div>` : "")
     + (sc.cc ? `<div class="cc"><b>Cc</b> ${esc(sc.cc)}</div>` : "")
@@ -860,11 +925,68 @@ function renderMsg(m) {
     </div>`;
 }
 
+/* Everything Instantly holds on this lead. Fetched per conversation rather
+   than stored: the custom variables differ per campaign (19 distinct names
+   so far) and a new campaign can invent another tomorrow. Failure is quiet —
+   the panel simply stays hidden; it is context, not the message itself. */
+let factsSeq = 0;
+async function loadLeadFacts(key) {
+  const box = $('d-facts');
+  if (!box) return;
+  const mine = ++factsSeq;
+  box.hidden = true;
+  let d;
+  try { d = await api('/api/lead/instantly?key=' + encodeURIComponent(key)); }
+  catch (e) { return; }
+  if (mine !== factsSeq || key !== openLeadKey) return;   // a newer lead is open
+  const fields = (d.fields || []).concat(d.extra || []);
+  if (!d.found || !fields.length) return;
+
+  const linkify = v => /^https?:\/\//i.test(v)
+    ? `<a href="${escAttr(v)}" target="_blank" rel="noopener">${esc(v.replace(/^https?:\/\//i, ''))}</a>`
+    : esc(v);
+  // Private windows and blocked site data make this throw, not just return null.
+  let open = true;
+  try { open = localStorage.getItem('lg_facts_open') !== '0'; } catch (e) {}
+  box.className = 'facts' + (open ? '' : ' closed');
+  box.innerHTML =
+    `<div class="facts-head"><span class="caret">▾</span>Lead details · ${fields.length}</div>`
+    + '<div class="facts-grid">'
+    + fields.map(f => `<div class="facts-row"><span class="k">${esc(f.name)}</span>`
+        + `<span class="v" title="${escAttr(f.value)}">${linkify(f.value)}</span></div>`).join('')
+    + '</div>'
+    + (d.campaign_matched ? ''
+        : '<div class="facts-note">From this lead\'s record in another campaign — they appear in more than one.</div>');
+  box.querySelector('.facts-head').onclick = () => {
+    const nowClosed = !box.classList.contains('closed');
+    box.classList.toggle('closed', nowClosed);
+    try { localStorage.setItem('lg_facts_open', nowClosed ? '0' : '1'); } catch (e) {}
+  };
+  box.hidden = false;
+}
+
 async function loadThread(key, silent) {
   let data;
   try { data = await api('/api/thread?key=' + encodeURIComponent(key)); }
-  catch (e) { if (!silent) toast(e.message, true); return; }
+  catch (e) {
+    if (!silent) toast(e.message, true);
+    /* A toast lasts three seconds; "Loading conversation…" lasted until you
+       closed the drawer. Say what went wrong and offer a way out — a dropped
+       request is usually just the network, and one click should fix it. */
+    if (key === openLeadKey && !silent) {
+      $('thread').innerHTML = `<div class="empty">Couldn't load this conversation.<br>`
+        + `<span style="color:var(--muted);font-size:12px">${esc(e.message)}</span><br><br>`
+        + `<button class="sbtn" id="thread-retry">Try again</button></div>`;
+      const b = document.getElementById('thread-retry');
+      if (b) b.onclick = () => {
+        $('thread').innerHTML = '<div class="empty">Loading conversation…</div>';
+        loadThread(key);
+      };
+    }
+    return;
+  }
   if (key !== openLeadKey) return;
+  if (!silent) loadLeadFacts(key);   // not on background refreshes
   renderDrawerHead();
 
   let html = '';
@@ -1159,8 +1281,8 @@ async function renderActivity() {
   try { d = await api('/api/activity/summary?' + p.toString()); }
   catch (e) { toast(e.message, true); return; }
   if (!d.rows.length) { $('activity-body').innerHTML = '<div class="activity-row">No activity in this range.</div>'; return; }
-  const cols = [['replies', 'Replies'], ['statuses', 'Statuses'], ['notes', 'Notes'],
-    ['labels', 'Labels'], ['poc', 'POC'], ['rates', 'Rates'], ['total', 'Total']];
+  const cols = [['replies', 'Replies'], ['scheduled', 'Scheduled'], ['statuses', 'Statuses'],
+    ['notes', 'Notes'], ['labels', 'Labels'], ['poc', 'POC'], ['rates', 'Rates'], ['total', 'Total']];
   let html = '<table class="act-table"><thead><tr><th>Member</th>' +
     cols.map(c => `<th class="num">${c[1]}</th>`).join('') + '</tr></thead><tbody>';
   for (const r of d.rows) {
@@ -1696,7 +1818,7 @@ function openLeadByEmail(email) {
 document.addEventListener('DOMContentLoaded', () => {
   $('login-btn').onclick = submitLogin;
   $('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
-  ['date-from', 'date-to', 'poc-filter', 'status-filter', 'label-filter', 'cat-filter'].forEach(id => { const e = $(id); if (e) e.onchange = refresh; });
+  ['date-from', 'date-to', 'poc-filter', 'status-filter', 'label-filter'].forEach(id => { const e = $(id); if (e) e.onchange = refresh; });
   $('sort-order').onchange = () => { sortOrder = $('sort-order').value; renderList(); };
   document.querySelectorAll('.nav-item').forEach(b => b.onclick = () => switchView(b.dataset.view));
   $('analytics-refresh').onclick = loadAnalytics;
@@ -1708,7 +1830,8 @@ document.addEventListener('DOMContentLoaded', () => {
   $('ws-close').onclick = () => { $('ws-bg').style.display = 'none'; };
   $('clear-filters').onclick = () => {
     selectedCampaigns.clear();
-    ['poc-filter', 'status-filter', 'label-filter', 'cat-filter', 'search', 'date-from', 'date-to'].forEach(id => { const e = $(id); if (e) e.value = ''; });
+    selectedCats.clear();
+    ['poc-filter', 'status-filter', 'label-filter', 'search', 'date-from', 'date-to'].forEach(id => { const e = $(id); if (e) e.value = ''; });
     rateFilter = '';
     sortOrder = 'newest';
     $('sort-order').value = 'newest';
@@ -1719,12 +1842,15 @@ document.addEventListener('DOMContentLoaded', () => {
     $('campaign-menu').classList.toggle('open');
   };
   $('campaign-menu').onclick = (e) => e.stopPropagation();
+  $('cat-btn').onclick = (e) => { e.stopPropagation(); $('cat-menu').classList.toggle('open'); $('campaign-menu').classList.remove('open'); };
+  $('cat-menu').onclick = (e) => e.stopPropagation();
   $('tpl-btn').onclick = (e) => { e.stopPropagation(); $('tpl-menu').classList.toggle('open'); $('links-menu').classList.remove('open'); };
   $('tpl-menu').onclick = (e) => e.stopPropagation();
   $('links-btn').onclick = (e) => { e.stopPropagation(); $('links-menu').classList.toggle('open'); $('tpl-menu').classList.remove('open'); };
   $('links-menu').onclick = (e) => e.stopPropagation();
   document.addEventListener('click', () => {
     $('campaign-menu').classList.remove('open');
+    $('cat-menu').classList.remove('open');
     $('tpl-menu').classList.remove('open');
     $('links-menu').classList.remove('open');
   });

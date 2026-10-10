@@ -677,6 +677,7 @@ function convDict(row, campaignNames) {
     snoozed_until: row.snoozed_until, social_url: row.social_url, lead_owner: row.lead_owner, poc: row.poc,
     lead_category: row.lead_category || '',
     deal_videos: row.deal_videos, deal_budget: row.deal_budget, deal_deliverables: row.deal_deliverables,
+    deal_referral_pct: row.deal_referral_pct, deal_plan_access: row.deal_plan_access || '',
     fail_reason: row.fail_reason, fail_notes: row.fail_notes,
     rate_their_initial: row.rate_their_initial, rate_their_final: row.rate_their_final,
     rate_our_initial: row.rate_our_initial, rate_our_final: row.rate_our_final,
@@ -754,8 +755,33 @@ async function pushEntryToConversation(env, entryId, body) {
 async function sendReplyNow(env, key, text, user, cc = '', bcc = '') {
   const i = key.indexOf('|');
   const campaignId = key.slice(0, i), leadEmail = key.slice(i + 1);
-  const last = await env.DB.prepare(`SELECT id, subject, eaccount FROM emails WHERE campaign_id=? AND lead_email=? ORDER BY timestamp_email DESC LIMIT 1`).bind(campaignId, leadEmail).first();
+  /* Reply to the lead's own most recent message — NOT simply the most recent
+     message on the thread.
+
+     Replying addresses the SENDER of whatever you reply to. When the newest
+     message was one of ours (a follow-up, or a campaign step that fired after
+     their reply), Instantly addressed the mail back to our own account and the
+     lead never received it. Measured before the fix: 460 of 2,034 manual
+     replies since 1 August went to our own inbox, across 305 leads, and
+     Instantly's own record for those shows to == from == our sending account.
+
+     The ORDER BY puts the lead's messages first, so this picks their newest;
+     the timestamp fallback only applies if they have never written, which a
+     Unibox conversation cannot be, but keeps the query total. */
+  const last = await env.DB.prepare(
+    `SELECT id, subject, eaccount, ue_type FROM emails
+      WHERE campaign_id=? AND lead_email=?
+      ORDER BY (ue_type = 2) DESC, timestamp_email DESC LIMIT 1`).bind(campaignId, leadEmail).first();
   if (!last) throw new ApiError(404, 'No conversation found');
+  /* Belt and braces. If the best target is still one of our own messages the
+     lead has never written here (or their reply was not synced), and sending
+     would address us, not them — which is the failure this whole change is
+     about. Refuse loudly instead of sending something nobody receives. */
+  if (last.ue_type !== 2) {
+    throw new ApiError(409,
+      'No message from this lead to reply to — sending now would go to our own inbox. '
+      + 'Run a sync first; if it persists, reply from Instantly directly.');
+  }
   let subject = last.subject || '';
   if (!subject.toLowerCase().startsWith('re:')) subject = 'Re: ' + subject;
   const convRow = await env.DB.prepare('SELECT eaccount, ws FROM conversations WHERE key=?').bind(key).first();
@@ -781,6 +807,24 @@ async function sendReplyNow(env, key, text, user, cc = '', bcc = '') {
     await emailUpsertStmt(env, sent, wsId).run();
   }
   await recomputeConversations(env, [`${campaignId}|${leadEmail}`]);
+
+  /* Check what Instantly ACTUALLY did, rather than assuming a 200 means
+     delivered. Not checking is what let 575 replies go to our own inbox over
+     two and a half months without anyone noticing: the UI said "Reply sent ✓"
+     every single time.
+
+     The message is already stored above, so the thread stays honest about what
+     happened — but the person who pressed Send is told it did not reach anyone,
+     at the moment they can still do something about it. */
+  const landedOn = String((sent && sent.to_address_email_list) || '').toLowerCase().trim();
+  if (sent && sent.id && (!landedOn || landedOn === String(eaccount).toLowerCase())) {
+    console.log('reply addressed to our own account', key, landedOn || '(empty)');
+    await touchConv(env, key, user, 'reply_undelivered', landedOn || '(no recipient)');
+    throw new ApiError(502,
+      'That reply went to our own inbox (' + (landedOn || 'no recipient') + '), not to the lead. '
+      + 'They did NOT receive it. This usually means their reply has not synced yet — '
+      + 'run a sync and try again, or reply from Instantly directly.');
+  }
   await touchConv(env, key, user, 'reply_sent', text.slice(0, 80));
   await relinkConv(env, key);
   return { ok: true };
@@ -836,6 +880,16 @@ async function runScheduledReplies(env) {
     "SELECT * FROM scheduled_replies WHERE status='pending' AND send_at <= ? ORDER BY send_at LIMIT ?")
     .bind(nowIso(), SCHED_BATCH).all();
   for (const row of due) {
+    /* Claim the row BEFORE sending. Cron invocations can overlap — the queue
+       drains after the sync, which is not instant — and reading a pending row,
+       sending, then marking it sent leaves a window where a second invocation
+       reads the same row and sends it again. That is not hypothetical: two
+       leads received the identical reply twice, 0.2s apart, on 2026-09-18.
+       A single conditional UPDATE is atomic, so exactly one claimer sees
+       changes=1 and the loser skips. */
+    const claim = await env.DB.prepare(
+      "UPDATE scheduled_replies SET status='sending' WHERE id=? AND status='pending'").bind(row.id).run();
+    if (!claim.meta || !claim.meta.changes) continue;   // another invocation owns it
     try {
       // Held, not sent, if the lead has said something since it was written.
       const latest = await latestLeadMsgAt(env, row.lead_key);
@@ -1151,6 +1205,45 @@ async function handleApi(request, env, url) {
 
        Attribution: created_by when a teammate added it through the app,
        otherwise lead_owner — master rows have no created_by. */
+
+  /* Per-member counts for the Unibox's "Member activity" panel.
+     The Unibox has always called this; only the standalone crm_platform worker
+     implemented it, and the Unibox people actually use is served from HERE — so
+     the panel 404'd and showed an empty box with a "Not found" toast. */
+  if (path === '/api/activity/summary' && method === 'GET') {
+    const user = await requireUser(env, request);
+    if (!user.is_admin) throw new ApiError(403, 'Admins only');
+    const p = url.searchParams;
+    let sql = "SELECT author, kind, COUNT(*) c FROM activity WHERE author != 'Auto'";
+    const args = [];
+    /* IST day boundaries, like /api/activity right below — NOT a raw UTC prefix
+       compare. IST is UTC+5:30, so anything after 18:30 UTC belongs to the next
+       working day; 149 rows currently sit on the wrong side of that, the most
+       recent of them last night. The two panels have to agree. */
+    const { startIso, endIso } = istRange(p.get('from'), p.get('to'));
+    if (startIso) { sql += ' AND created_at >= ?'; args.push(startIso); }
+    if (endIso) { sql += ' AND created_at <= ?'; args.push(endIso); }
+    sql += ' GROUP BY author, kind';
+    const { results } = await env.DB.prepare(sql).bind(...args).all();
+    const KIND_COL = {
+      reply_sent: 'replies', reply_scheduled: 'scheduled', status_change: 'statuses',
+      note: 'notes', label_change: 'labels', snooze: 'snoozes', poc_change: 'poc',
+      rate_manual: 'rates',
+    };
+    const byAuthor = {};
+    for (const r of results) {
+      const a = r.author || '(unknown)';
+      if (!byAuthor[a]) byAuthor[a] = {
+        author: a, replies: 0, scheduled: 0, statuses: 0, notes: 0,
+        labels: 0, snoozes: 0, poc: 0, rates: 0, total: 0,
+      };
+      const col = KIND_COL[r.kind];
+      if (col) byAuthor[a][col] += r.c;
+      byAuthor[a].total += r.c;
+    }
+    const rows = Object.values(byAuthor).sort((a, b) => b.replies - a.replies || b.total - a.total);
+    return json({ rows });
+  }
 
   if (path === '/api/activity' && method === 'GET') {
     await requireUser(env, request); // visible to everyone
@@ -2014,7 +2107,17 @@ async function handleApi(request, env, url) {
     const catF = p.get('category') || '';
     // Conversations whose lead has no category drop out, like every other
     // filter here.
-    if (catF) { sql += ' AND lower(' + CAT_PICK + ') = ?'; args.push(catF.toLowerCase()); }
+    /* One or more, pipe-separated. Categories are user-created free text and a
+       comma inside one ("Food, Drink") would split into two bogus filters, so
+       the separator is "|". A value with no separator is still a single
+       category, which keeps any older caller working. */
+    if (catF) {
+      const cats = catF.split('|').map(c => c.trim().toLowerCase()).filter(Boolean);
+      if (cats.length) {
+        sql += ' AND lower(' + CAT_PICK + ') IN (' + cats.map(() => '?').join(',') + ')';
+        args.push(...cats);
+      }
+    }
     const campaign = p.get('campaign') || '';
     if (campaign) { const ids = campaign.split(',').filter(Boolean); sql += ` AND campaign_id IN (${ids.map(() => '?').join(',')})`; args.push(...ids); }
     const poc = p.get('poc') || '';
@@ -2064,6 +2167,50 @@ async function handleApi(request, env, url) {
     });
   }
 
+  /* Everything Instantly holds on this lead — the custom variables set when the
+     CSV was uploaded (location, IGFollowers, CommunityURL, Members, Price…).
+     The sync already fetches this payload in runEnrich and keeps exactly two
+     fields from it (Primary Social Profile, Lead Owner), discarding the rest;
+     that is why the CRM only ever showed the social profile.
+
+     Fetched live rather than stored: the variables differ per campaign, there
+     are 19 distinct names and counting, and a schema for them would be out of
+     date the next time a campaign is set up with a new column. */
+  if (path === '/api/lead/instantly' && method === 'GET') {
+    await requireUser(env, request);
+    const key = url.searchParams.get('key') || '';
+    const i = key.indexOf('|');
+    if (i < 0) throw new ApiError(400, 'Bad conversation key');
+    const campaignId = key.slice(0, i), leadEmail = key.slice(i + 1);
+    const conv = await env.DB.prepare('SELECT ws FROM conversations WHERE key=?').bind(key).first();
+    const apiKey = await wsKey(env, (conv && conv.ws) || 1);
+    let items = [];
+    try {
+      const data = await instantlyPost(env, '/leads/list', { contacts: [leadEmail], limit: 10 }, apiKey);
+      items = data.items || [];
+    } catch (e) { throw new ApiError(502, `Instantly lookup failed: ${e.message}`); }
+    if (!items.length) return json({ found: false, fields: [] });
+    // Prefer the record for THIS campaign; a lead can sit in several.
+    const pick = items.find(it => (it.campaign || '') === campaignId) || items[0];
+    const payload = (pick.payload && typeof pick.payload === 'object') ? pick.payload : {};
+    /* Names are shown exactly as the campaign spells them — "IGFollowers" in one
+       and "ig_followers" in another. Renaming them would hide which campaign a
+       value came from, and would silently drop any new variable. */
+    const SKIP = new Set(['email', 'firstName', 'lastName', 'pause_until']);
+    const fields = Object.entries(payload)
+      .filter(([k, v]) => !SKIP.has(k) && v !== null && v !== undefined && String(v).trim() !== '')
+      .map(([k, v]) => ({ name: k, value: String(v) }));
+    // A few of Instantly's own fields that are genuinely useful next to a reply.
+    const extra = [
+      ['Website', pick.website], ['Company domain', pick.company_domain],
+      ['Opens', pick.email_open_count], ['Clicks', pick.email_click_count],
+      ['Replies', pick.email_reply_count], ['Added to Instantly', (pick.timestamp_created || '').slice(0, 10)],
+      ['Upload method', pick.upload_method],
+    ].filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '' && String(v) !== '0')
+     .map(([name, value]) => ({ name, value: String(value) }));
+    return json({ found: true, fields, extra, campaign_matched: (pick.campaign || '') === campaignId });
+  }
+
   // Full email thread for one conversation (+ notes, activity, older campaigns).
   if (path === '/api/thread' && method === 'GET') {
     await requireUser(env, request);
@@ -2090,7 +2237,7 @@ async function handleApi(request, env, url) {
       .sort((a, b) => (a.last_msg_at < b.last_msg_at ? 1 : -1));
     const { results: scheduled } = await env.DB.prepare(
       `SELECT id, text, send_at, status, created_by, created_at, error, cc, bcc FROM scheduled_replies
-        WHERE lead_key=? AND status IN ('pending','held','failed') ORDER BY send_at`).bind(key).all();
+        WHERE lead_key=? AND status IN ('pending','sending','held','failed') ORDER BY send_at`).bind(key).all();
     return json({ emails: cur, notes: notesRes.results, activity: actRes.results, other_threads, scheduled });
   }
 
@@ -2228,6 +2375,14 @@ async function handleApi(request, env, url) {
     const dealV = status === 'closed' ? String(d.videos || '') : '';
     const dealB = status === 'closed' ? String(d.budget || '') : '';
     const dealD = status === 'closed' ? String(d.deliverables || '') : '';
+    /* A number, so it can be counted later. Empty stays NULL rather than 0:
+       "not agreed" and "agreed at zero" are different facts. */
+    const pctRaw = status === 'closed' ? String(d.referral_pct == null ? '' : d.referral_pct).trim() : '';
+    const dealP = pctRaw === '' ? null : Number(pctRaw.replace(/[%\s]/g, ''));
+    if (dealP !== null && (!Number.isFinite(dealP) || dealP < 0 || dealP > 100)) {
+      throw new ApiError(400, 'Referral commission must be a percentage between 0 and 100');
+    }
+    const dealA = status === 'closed' ? String(d.plan_access || '') : '';
     const failR = status === 'failed' ? String(d.fail_reason || '') : '';
     const failN = status === 'failed' ? String(d.fail_notes || '') : '';
     const wantRates = status === 'rates_quoted' || (status === 'failed' && failR === 'out_of_budget');
@@ -2237,9 +2392,10 @@ async function handleApi(request, env, url) {
     const rOf = wantRates ? String(d.our_final || '') : '';
     const r = await env.DB.prepare(
       `UPDATE conversations SET status=?, status_source='manual', deal_videos=?, deal_budget=?, deal_deliverables=?,
+         deal_referral_pct=?, deal_plan_access=?,
          fail_reason=?, fail_notes=?, rate_their_initial=?, rate_their_final=?, rate_our_initial=?, rate_our_final=?,
          updated_at=? WHERE key=?`)
-      .bind(status, dealV, dealB, dealD, failR, failN, rTi, rTf, rOi, rOf, nowIso(), body.key || '').run();
+      .bind(status, dealV, dealB, dealD, dealP, dealA, failR, failN, rTi, rTf, rOi, rOf, nowIso(), body.key || '').run();
     if (!r.meta.changes) throw new ApiError(404, 'Conversation not found');
     // NOTE: "out of budget" is a Failed REASON, not a label — it flows to the
     // pipeline's Failed "Reason" column via syncEntriesFromConversations. We
@@ -2327,7 +2483,12 @@ async function handleApi(request, env, url) {
     const row = await env.DB.prepare('SELECT * FROM scheduled_replies WHERE id=?').bind(Number(body.id) || 0).first();
     if (!row) throw new ApiError(404, 'No such scheduled reply');
     if (row.status !== 'pending' && row.status !== 'held') throw new ApiError(400, 'That reply is already ' + row.status);
-    await env.DB.prepare("UPDATE scheduled_replies SET status='cancelled' WHERE id=?").bind(row.id).run();
+    /* Guard on the write, not just the read. Between the two, the cron can claim
+       the row and start sending — cancelling it then would mark as "cancelled" a
+       reply that is already on its way out. */
+    const done = await env.DB.prepare(
+      "UPDATE scheduled_replies SET status='cancelled' WHERE id=? AND status IN ('pending','held')").bind(row.id).run();
+    if (!done.meta || !done.meta.changes) throw new ApiError(409, 'Too late — that reply is already being sent');
     await touchConv(env, row.lead_key, user, 'reply_unscheduled', row.send_at);
     return json({ ok: true });
   }
@@ -2338,7 +2499,19 @@ async function handleApi(request, env, url) {
     const row = await env.DB.prepare('SELECT * FROM scheduled_replies WHERE id=?').bind(Number(body.id) || 0).first();
     if (!row) throw new ApiError(404, 'No such scheduled reply');
     if (row.status !== 'pending' && row.status !== 'held') throw new ApiError(400, 'That reply is already ' + row.status);
-    await sendReplyNow(env, row.lead_key, row.text, user, row.cc || '', row.bcc || '');
+    /* Same claim as the cron, for the same reason: a click that lands in the
+       same second as the queue drain would otherwise send the reply twice. */
+    const claim = await env.DB.prepare(
+      "UPDATE scheduled_replies SET status='sending' WHERE id=? AND status IN ('pending','held')").bind(row.id).run();
+    if (!claim.meta || !claim.meta.changes) throw new ApiError(409, 'That reply is already being sent');
+    try {
+      await sendReplyNow(env, row.lead_key, row.text, user, row.cc || '', row.bcc || '');
+    } catch (e) {
+      // Hand it back rather than stranding it in 'sending'.
+      await env.DB.prepare('UPDATE scheduled_replies SET status=?, error=? WHERE id=?')
+        .bind(row.status, String((e && e.message) || e).slice(0, 300), row.id).run();
+      throw e;
+    }
     await env.DB.prepare("UPDATE scheduled_replies SET status='sent', sent_at=?, error='' WHERE id=?")
       .bind(nowIso(), row.id).run();
     return json({ ok: true });

@@ -865,6 +865,8 @@ const TAB_EXTRA = {
     { f: 'closing_rate',        h: 'Closing Rate',   e: 'text', deal: true },
     { f: 'closing_date',        h: 'Closing Date',   e: 'date' },
     { f: 'deliverables',        h: 'Deliverables',   e: 'text', deal: true },
+    { f: 'referral_pct',        h: 'Referral %',     e: 'text', deal: true },
+    { f: 'plan_access',         h: 'Plan access',    e: 'text', deal: true },
     { f: 'contract_signed',     h: 'Contract Signed', e: 'contract_signed' },
     { f: 'on_retainer',         h: 'On Retainer',    e: 'on_retainer' },
     { f: 'retainer_start_date', h: 'Retainer Start', e: 'date' },

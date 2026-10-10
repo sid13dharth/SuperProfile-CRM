@@ -286,12 +286,48 @@ a.chip.social:hover { text-decoration: underline; }
 .drawer-head .mail { color: var(--muted); font-size: 13px; }
 .drawer-head .close { margin-left: auto; background: none; border: 0; color: var(--muted); font-size: 22px; }
 .drawer-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+/* Lead details from Instantly. Two columns so eight fields do not push the
+   conversation off the screen; the whole block collapses. */
+.facts { margin-top: 10px; }
+/* The deal box collapses the same way, and for the same reason. */
+.deal-panel.collapsible .dp-head {
+  display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+  font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--muted);
+}
+.deal-panel.collapsible .dp-head:hover { color: var(--text); }
+.deal-panel.collapsible .dp-head .caret { transition: transform .15s ease; }
+.deal-panel.closed .dp-head .caret { transform: rotate(-90deg); }
+.deal-panel.closed .dp-body { display: none; }
+.facts[hidden] { display: none; }
+.facts-head {
+  display: flex; align-items: center; gap: 6px; cursor: pointer;
+  font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  color: var(--muted); user-select: none;
+}
+.facts-head:hover { color: var(--text); }
+.facts-head .caret { transition: transform .15s ease; }
+.facts.closed .facts-head .caret { transform: rotate(-90deg); }
+.facts-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 2px 18px; margin-top: 6px;
+}
+.facts.closed .facts-grid { display: none; }
+.facts-row { display: flex; gap: 8px; font-size: 12.5px; line-height: 1.7; min-width: 0; }
+.facts-row .k { color: var(--muted); white-space: nowrap; }
+.facts-row .v { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.facts-row .v a { color: var(--accent); }
+.facts-note { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
 .sbtn {
   font-size: 12px; padding: 5px 11px; border-radius: 999px;
   background: var(--bg3); border: 1px solid var(--border); color: var(--text);
 }
 .sbtn.on { border-color: var(--accent); color: var(--accent); font-weight: 700; }
-.drawer-body { flex: 1; overflow-y: auto; padding: 14px 20px; }
+/* min-height:0 lets a flex child shrink; the floor stops it collapsing to a
+   sliver on a short screen or at 125% display scaling, which is why one
+   person saw a usable thread and another saw four lines of it. */
+.drawer-body { flex: 1 1 auto; min-height: 220px; overflow-y: auto; padding: 14px 20px; }
+/* The head may scroll rather than push the conversation off the screen. */
+.drawer-head { flex: 0 0 auto; max-height: 46vh; overflow-y: auto; }
 .msg { margin-bottom: 14px; }
 .msg .meta { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
 .msg .meta b { color: var(--text); }
@@ -329,6 +365,12 @@ a.chip.social:hover { text-decoration: underline; }
 .drawer-foot { border-top: 1px solid var(--border); padding: 12px 20px; }
 .sched-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
 .cc-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+/* An author `display` beats the browser's own `[hidden] { display: none }`, so
+   these rows stayed on screen while their .hidden PROPERTY was still true —
+   visible boxes whose contents the send path then discarded as "not shown".
+   Same fix as .older-wrap above; it must accompany every display rule on an
+   element that toggles `hidden`. */
+.sched-row[hidden], .cc-row[hidden] { display: none; }
 .cc-row label { font-size: 12px; font-weight: 700; color: var(--muted); width: 28px; }
 .cc-row input {
   flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border);
@@ -359,7 +401,9 @@ a.chip.social:hover { text-decoration: underline; }
 .sched-item.held .meta b { color: var(--red); }
 .sched-item .why { font-size: 12px; color: var(--text); margin-bottom: 6px; }
 .drawer-foot textarea {
-  width: 100%; min-height: 170px; max-height: 45vh; background: var(--bg);
+  /* 170px of empty box cost the conversation 60px on every screen. It still
+     grows as you type, and the resize handle still works. */
+  width: 100%; min-height: 108px; max-height: 45vh; background: var(--bg);
   border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px;
   outline: none; resize: vertical; margin-bottom: 8px; line-height: 1.5;
 }

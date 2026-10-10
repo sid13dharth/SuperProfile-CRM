@@ -581,6 +581,7 @@ async function syncEntriesFromConversations(env, entryIds) {
   for (const id of entryIds) {
     const { results: convs } = await env.DB.prepare(
       `SELECT campaign_id, status, label, poc, quoted_usd, rate_their_initial, rate_their_final, rate_our_final, deal_deliverables, deal_budget,
+              deal_referral_pct, deal_plan_access,
               fail_reason, fail_notes, last_lead_msg_at, last_our_msg_at FROM conversations WHERE entry_id=?`).bind(id).all();
     if (!convs.length) continue;
     let status = '', label = '', poc = '', lastReply = '', lastContact = '';
@@ -600,10 +601,13 @@ async function syncEntriesFromConversations(env, entryIds) {
       const { results: cn } = await env.DB.prepare(`SELECT name FROM campaigns WHERE id IN (${ph})`).bind(...ids).all();
       campNames = cn.map(r => r.name).filter(Boolean);
     }
-    const deal = convs.find(c => c.rate_their_initial || c.rate_their_final || c.rate_our_final || c.deal_deliverables) || {};
+    const deal = convs.find(c => c.rate_their_initial || c.rate_their_final || c.rate_our_final
+      || c.deal_deliverables || c.deal_referral_pct != null || c.deal_plan_access) || {};
     const crmDeal = JSON.stringify({
       their_initial: deal.rate_their_initial || '', their_final: deal.rate_their_final || '',
       our_final: deal.rate_our_final || '', deliverables: deal.deal_deliverables || '', budget: deal.deal_budget || '',
+      referral_pct: deal.deal_referral_pct == null ? '' : String(deal.deal_referral_pct) + '%',
+      plan_access: deal.deal_plan_access || '',
     });
     // Carry the Unibox close/fail form's failure reason onto the person so it
     // lands in the CRM's Failed "Reason" column (out_of_budget → "Out of budget").
