@@ -86,6 +86,9 @@ const state = { me: null, crmUrl: '', lookupConfigured: false, entries: [], vide
   // Grid sort. key '' = the server's default order (data-rich first, newest first).
   sort: { key: '', dir: 'desc' },
   linkDomains: [],
+  // The platform tab. Remembered per machine; 'all' shows every platform.
+  platform: (() => { try { return localStorage.getItem('lg_platform') || 'instagram'; } catch (e) { return 'instagram'; } })(),
+  platforms: [], platformCounts: {}, dupOnly: false,
   pipeline: { stages: ['Leads', 'Responses', 'Closed', 'Failed'], nodes: [], byKey: {}, children: {} } };
 
 /* ── auth / boot ───────────────────────────────────────────── */
@@ -139,7 +142,7 @@ function showApp() {
   if (state.me.is_admin) $('team-btn').style.display = '';
   loadCategories();
   loadTeam();
-  loadPipeline().then(() => (deepLink ? runDeepLink() : switchTab('leads')));
+  loadPlatforms().then(loadPipeline).then(() => (deepLink ? runDeepLink() : switchTab('leads')));
   injectCountries();
   startPolling();
   // Warm the Unibox iframe in the background (hidden) so it's already booted
@@ -395,6 +398,11 @@ async function deletePipeNode(key) {
 /* ── add-a-lead form + live preview ────────────────────────── */
 function currentForm() {
   return {
+    platform: $('f-platform') ? ($('f-platform').value || 'instagram') : 'instagram',
+    p_display: $('f-pdisplay') ? $('f-pdisplay').value.trim() : '',
+    p_audience: $('f-paud') ? $('f-paud').value.trim() : '',
+    p_last_activity: $('f-plast') ? $('f-plast').value.trim() : '',
+    p_price: $('f-pprice') ? $('f-pprice').value.trim() : '',
     social_url: $('f-social').value.trim(),
     email: $('f-email').value.trim(),
     first_name: $('f-firstname').value.trim(),
@@ -435,9 +443,9 @@ function renderSignals(box, res) {
   if (res.email_dup) {
     const e = res.email_dup;
     box.appendChild(sig(e.source === 'master' ? 'blue' : 'red', '📧',
-      `<b>Email already in our database.</b> This lead already exists` +
+      `<b>Email already in our database.</b> This lead already exists on this platform` +
       (e.owner || e.created_by ? ` — added by <b>${esc(e.owner || e.created_by)}</b>` : '') + '.' +
-      `<small>${e.handle ? '@' + esc(e.handle) + ' · ' : ''}${e.created_at ? esc(fmtDate(e.created_at)) : ''}${e.source === 'master' ? ' · master sheet' : ''}</small>`));
+      `<small>${e.handle && !/:email:/.test(e.handle) ? esc(e.handle.includes(':') ? e.handle.replace(/^[a-z0-9]+:/, '') : '@' + e.handle) + ' · ' : ''}${e.created_at ? esc(fmtDate(e.created_at)) : ''}${e.source === 'master' ? ' · master sheet' : ''}</small>`));
   }
   // Signal 2 — prior Instantly conversation (via the CRM), independent of #1.
   renderCrmSignal(box, res.crm, res.email);
@@ -509,7 +517,8 @@ async function openConvModal(e) {
     bg.addEventListener('click', ev => { if (ev.target === bg) bg.classList.remove('open'); });
     document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && bg.classList.contains('open')) bg.classList.remove('open'); });
   }
-  $('conv-title').textContent = e.first_name ? `${e.first_name} · @${e.handle || ''}` : (e.handle ? '@' + e.handle : (e.email || 'Lead'));
+  $('conv-title').textContent = (e.first_name ? e.first_name + ' · ' : '') + leadName(e)
+    + (e.platform && e.platform !== 'instagram' ? ' · ' + platName(e.platform) : '');
   $('conv-body').innerHTML = '<div class="empty">Loading conversation…</div>';
   let d;
   try { d = await api('/api/lead/detail?entry_id=' + encodeURIComponent(e.id)); }
@@ -518,7 +527,9 @@ async function openConvModal(e) {
   const det = [];
   const row = (k, v) => { if (v) det.push(`<span class="cd"><span class="k">${esc(k)}</span> <span class="v">${v}</span></span>`); };
   row('Email', en.email ? esc(en.email) : '');
-  row('Handle', en.handle ? `<a href="${esc(en.social_url || ('https://instagram.com/' + en.handle))}" target="_blank" rel="noopener">@${esc(en.handle)}</a>` : '');
+  row(en.platform && en.platform !== 'instagram' ? platName(en.platform) : 'Handle', en.social_url
+    ? `<a href="${esc(en.social_url)}" target="_blank" rel="noopener">${esc(leadName(en))}</a>`
+    : (en.profile ? esc(leadName(en)) : '<span class="muted">no profile link yet</span>'));
   row('Stage', [en.stage, en.position].filter(Boolean).map(esc).join(' › '));
   row('Status', en.status ? esc(en.status) : '');
   row('Label', en.label ? esc(en.label) : '');
@@ -554,11 +565,26 @@ async function openConvModal(e) {
   const vids = sec('Videos', d.videos, v => `<div>${v.url ? `<a href="${esc(v.url)}" target="_blank" rel="noopener">${esc((v.url || '').replace(/^https?:\/\//, '').slice(0, 55))}</a>` : esc(v.lead_name || '—')}${v.budget ? ' · ' + esc(v.budget) : ''}${v.date_posted ? ' · ' + esc(fmtDate(v.date_posted)) : ''}</div>`);
   const notes = sec('Notes', d.notes, n => `<div><b>${esc(n.author || '')}</b> <span class="muted">${esc(fmtDate(n.created_at))}</span><br>${esc(n.text || '').replace(/\n/g, '<br>')}</div>`);
   const act = sec('Activity', d.activity, a => `<div class="muted small">${esc(fmtDate(a.created_at))} · ${esc(a.author || '')} · ${esc(a.kind || '')}${a.detail ? ': ' + esc(a.detail) : ''}</div>`);
-  const extras = [vids, notes, act].filter(Boolean).join('');
+  const xp = d.other_platforms || [];
+  const xplat = xp.length ? `<div class="conv-sec xplat-sec"><h4>Same email on other platforms (${xp.length})</h4><div class="xplat">${xp.map(o =>
+    `<div class="xplat-row"><span class="pn" style="--pc:${platVar(o.platform)}">${esc(platName(o.platform))}</span>`
+    + `<span class="muted">${esc(o.profile || o.p_display || '—')}</span><span>${esc(o.stage || '—')}</span>`
+    + `<span class="muted">${esc(o.status || '—')} · ${esc(o.lead_manager || o.lead_owner || '—')}</span>`
+    + `<button class="hbtn" data-xopen="${o.id}">Open</button></div>`).join('')}</div></div>` : '';
+  const cv = d.conversations || [];
+  const camps = cv.length ? sec('Campaigns with this email', cv, c =>
+    `<div>${esc(c.campaign_name || '(no campaign)')} <span class="pn conv-plat" style="--pc:${platVar(c.platform)}">${esc(platName(c.platform))}</span>`
+    + ` <span class="muted small">${esc(c.status || '')}${c.lead_reply_count ? ' · ' + c.lead_reply_count + (c.lead_reply_count === 1 ? ' reply' : ' replies') : ''}</span></div>`) : '';
+  const extras = [camps, vids, notes, act].filter(Boolean).join('');
   $('conv-body').innerHTML =
     `<div class="conv-top">${det.join('') || '<span class="muted">—</span>'}</div>`
+    + xplat
     + (extras ? `<div class="conv-extras">${extras}</div>` : '')
     + `<div class="conv-thread full"><div class="conv-thread-h">Conversation (${emails.length})</div>${gap}${thread}</div>`;
+  $('conv-body').querySelectorAll('[data-xopen]').forEach(b => b.onclick = () => {
+    const o = xp.find(x => String(x.id) === b.dataset.xopen);
+    if (o) openConvModal(o);
+  });
 }
 
 function sig(tone, ic, html) {
@@ -570,23 +596,24 @@ function sig(tone, ic, html) {
 async function addLead() {
   const f = currentForm();
   const msg = $('add-msg'); msg.className = 'add-msg'; msg.textContent = '';
-  if (!f.social_url) { msg.className = 'add-msg err'; msg.textContent = 'Enter an Instagram link or handle.'; return; }
+  if (!f.social_url) { msg.className = 'add-msg err'; msg.textContent = 'Enter the ' + platName(f.platform) + ' profile link or handle.'; return; }
   $('add-btn').disabled = true;
   try {
     const res = await api('/api/entries', { method: 'POST', body: f });
     if (res.saved) {
       msg.className = 'add-msg ok'; msg.textContent = '✓ Lead added.';
       $('f-social').value = ''; $('f-email').value = ''; $('f-firstname').value = ''; $('f-notes').value = ''; $('f-category').value = ''; $('preview').innerHTML = '';
-      toast('Lead added — @' + res.entry.handle);
+      updateAddForm();   // clears the platform fields and the "Also on" note
+      toast('Lead added to ' + platName(res.entry.platform) + ' — ' + (res.entry.profile || res.entry.handle));
       await loadEntries();
     } else {
       const d = res.duplicate || {};
       msg.className = 'add-msg err';
       msg.textContent = d.source === 'master'
-        ? `Already in the master sheet (owner ${d.owner || '—'}). Find @${d.handle || ''} in the list to edit it.`
+        ? `Already in the master sheet (owner ${d.owner || '—'}). Find ${String(d.handle || '').replace(/^[a-z0-9]+:(email:)?/, '')} in the list to edit it.`
         : d.matched_on === 'email'
-          ? `Not added — this email already exists in our database${d.handle ? ` (@${d.handle})` : ''}, added by ${d.owner || d.created_by || 'someone'} on ${fmtDate(d.created_at)}.`
-          : `Not added — @${d.handle || ''} already added by ${d.owner || d.created_by || 'someone'} on ${fmtDate(d.created_at)}.`;
+          ? `Not added — this email is already a ${platName(f.platform)} lead${d.handle ? ` (${String(d.handle || '').replace(/^[a-z0-9]+:(email:)?/, '')})` : ''}, added by ${d.owner || d.created_by || 'someone'} on ${fmtDate(d.created_at)}.`
+          : `Not added — ${String(d.handle || '').replace(/^[a-z0-9]+:(email:)?/, '')} is already a ${platName(f.platform)} lead, added by ${d.owner || d.created_by || 'someone'} on ${fmtDate(d.created_at)}.`;
     }
   } catch (e) { msg.className = 'add-msg err'; msg.textContent = e.message; }
   finally { $('add-btn').disabled = false; }
@@ -613,6 +640,8 @@ function filterParams() {
   if ($('active30') && $('active30').classList.contains('active')) p.set('active30', '1');
   const from = $('date-from').value; if (from) p.set('from', from);
   const to = $('date-to').value; if (to) p.set('to', to);
+  if (state.platform) p.set('platform', state.platform);
+  if (state.dupOnly) p.set('dup', '1');
   return p;
 }
 
@@ -630,6 +659,7 @@ async function loadEntries() {
   try { data = await api('/api/entries?' + qs.toString()); }
   catch (e) { $('list').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   state.entries = data.entries; state.version = data.version;
+  if (data.platform_counts) { state.platformCounts = data.platform_counts; renderPlatBar(); }
   state.owners = data.owners || [];
   state.statuses = data.statuses || [];
   state.labels = data.labels || [];
@@ -719,6 +749,7 @@ async function loadStats() {
   const p = new URLSearchParams();
   const from = $('date-from').value; if (from) p.set('from', from);
   const to = $('date-to').value; if (to) p.set('to', to);
+  if (state.platform) p.set('platform', state.platform);
   try {
     const s = await api('/api/stats?' + p.toString());
     state.stats = s;
@@ -878,9 +909,39 @@ const TAB_EXTRA = {
     { f: 'fail_details', h: 'Details', e: 'notes' },
   ],
 };
-const activeCols = () => CORE_COLS.concat(TAB_EXTRA[state.tab] || []);
+/* ── per-platform columns ──────────────────────────────────
+   Instagram keeps its full set. Every other platform shows the shared lead
+   columns plus its own: Subscribers on YouTube, Followers on X, Members and
+   Price on Skool — one p_audience field, labelled per platform. The shared
+   columns are the very same objects as Instagram's, so they cannot drift. */
+const colOf = key => CORE_COLS.find(c => (c.f || c.h) === key);
+const ALSO_COL = { h: 'Also on', also: true, cls: 'also' };
+const PLAT_COL = { h: 'Platform', platCol: true };
+const profileCol = h => ({ f: 'social_url', h, e: 'text', profile: true, cls: 'lnk' });
+const audCol = h => ({ f: 'p_audience', h, e: 'text', aud: true, cls: 'num', sortable: true });
+const P_HEAD = ['date', 'first_name'].map(colOf);
+const P_MID = ['category', 'country', 'email'].map(colOf);
+const P_TAIL = ['lead_owner', 'lead_manager', 'stage', 'status', 'label', 'notes', 'CRM'].map(colOf);
+const PLATFORM_COLS = {
+  youtube: [...P_HEAD, profileCol('Channel'), { f: 'p_display', h: 'Channel name', e: 'text' }, ALSO_COL, ...P_MID,
+            audCol('Subscribers'), { f: 'p_last_activity', h: 'Last upload', e: 'text' }, ...P_TAIL],
+  x:       [...P_HEAD, profileCol('Handle'), ALSO_COL, ...P_MID, audCol('Followers'), ...P_TAIL],
+  skool:   [colOf('date'), { ...colOf('first_name'), h: 'Owner' }, profileCol('Community'),
+            { f: 'p_display', h: 'Community name', e: 'text' }, ALSO_COL, ...P_MID,
+            audCol('Members'), { f: 'p_price', h: 'Price', e: 'text' }, ...P_TAIL],
+  all:     [colOf('date'), PLAT_COL, colOf('first_name'), profileCol('Profile'), ALSO_COL, ...P_MID, ...P_TAIL],
+};
+// Instagram: the existing set, with "Also on" beside the profile link.
+const IG_COLS = (() => { const out = []; for (const c of CORE_COLS) { out.push(c); if (c.link) out.push(ALSO_COL); } return out; })();
+function platformCore() {
+  if (!state.platform || state.platform === 'instagram') return IG_COLS;
+  return PLATFORM_COLS[state.platform] || [...P_HEAD, profileCol('Profile'), ALSO_COL, ...P_MID, ...P_TAIL];
+}
+const activeCols = () => platformCore().concat(TAB_EXTRA[state.tab] || []);
 
 function cellValue(e, c) {
+  if (c.also) return (e.also_on || []).map(platName).join(', ');
+  if (c.platCol) return platName(e.platform);
   if (c.uname) return e.handle || '';
   if (c.f === 'date') return istYmd(e.created_at);
   if (c.deal) return (e.deal && e.deal[c.f]) || '';
@@ -935,6 +996,19 @@ function igCell(e, c) {
 }
 
 function cellDisplay(e, c) {
+  // Platform names are coloured text — no dots, no pills.
+  if (c.also) {
+    const a = e.also_on || [];
+    return a.length ? `<span class="also-on">${a.map(k => `<span class="pn" style="--pc:${platVar(k)}">${esc(platName(k))}</span>`).join('')}</span>` : '';
+  }
+  if (c.platCol) return `<span class="pn" style="--pc:${platVar(e.platform)}">${esc(platName(e.platform))}</span>`;
+  if (c.profile) {
+    return e.social_url
+      ? `<a href="${esc(e.social_url)}" target="_blank" rel="noopener">${esc(e.profile || e.social_url.replace(/^https?:\/\//, ''))}</a>`
+      // Leads created from an email reply have no profile link yet.
+      : '<span class="ph" title="No profile link yet — click to add one">— add link —</span>';
+  }
+  if (c.aud) { const v = e[c.f]; return v === null || v === undefined || v === '' ? ph : esc(fmtCount(Number(v))); }
   if (c.link) return e.social_url ? `<a href="${esc(e.social_url)}" target="_blank" rel="noopener">${esc(e.social_url.replace(/^https?:\/\//, ''))}</a>` : ph;
   if (c.status) return statusChipHtml(e);
   if (c.f === 'status') { const l = statusLabel(e.status); return l ? `<span class="crumb">${esc(l)}</span>` : '<span class="ph">— set —</span>'; }
@@ -1183,7 +1257,7 @@ function renderEntries() {
   if (state.page > pageCount()) state.page = pageCount();
   // Re-measure only when the shape of the grid changes (tab, columns, or how
   // many rows matched) — not on every data refresh, and never on a page flip.
-  const sig = state.tab + '|' + g.cols.length + '|' + shown + '|' + (capped ? 'c' : '');
+  const sig = state.tab + '|' + state.platform + '|' + g.cols.length + '|' + shown + '|' + (capped ? 'c' : '');
   if (sig !== g.sig || !g.colW || !g.tbody || !list.querySelector('table.grid')) {
     const m = measureGrid(list, g.cols, g.head);
     g.colW = m.w; g.rowH = m.rowH; g.sig = sig;
@@ -1496,6 +1570,214 @@ const TABS = [
   { k: 'closed', h: 'Closed' }, { k: 'failed', h: 'Failed' },
   { k: 'all', h: 'All Leads' }, { k: 'videos', h: 'Videos' },
 ];
+/* ── platforms ─────────────────────────────────────────── */
+const BUILTIN_PLATS = ['instagram', 'youtube', 'x', 'skool'];
+/* How a lead is named in titles and prompts: @handle on Instagram and X, the
+   channel or community as-is elsewhere, the email when there is no profile yet. */
+function leadName(e) {
+  const p = e.profile !== undefined ? e.profile : e.handle;
+  if (!p) return e.email || 'this lead';
+  return (!e.platform || e.platform === 'instagram' || e.platform === 'x') ? '@' + p : p;
+}
+function platName(k) {
+  const p = (state.platforms || []).find(x => x.key === k);
+  return p ? p.name : ({ instagram: 'Instagram', youtube: 'YouTube', x: 'X', skool: 'Skool' }[k] || k || '');
+}
+// Brand colour as a CSS value; platforms added from the UI share one.
+function platVar(k) { return BUILTIN_PLATS.includes(k) ? `var(--plat-${k})` : 'var(--plat-custom)'; }
+function addPlatform() { return state.platform && state.platform !== 'all' ? state.platform : 'instagram'; }
+function platList() {
+  return state.platforms.length ? state.platforms : BUILTIN_PLATS.map(k => ({ key: k, name: platName(k) }));
+}
+
+async function loadPlatforms() {
+  try {
+    const d = await api('/api/platforms');
+    state.platforms = d.platforms || [];
+    state.platformCounts = Object.fromEntries(state.platforms.map(p => [p.key, p.count]));
+  } catch (e) { state.platforms = []; }
+  if (state.platform !== 'all' && state.platforms.length && !state.platforms.some(p => p.key === state.platform)) state.platform = 'instagram';
+  renderPlatBar(); applyPlatformUi();
+}
+
+function renderPlatBar() {
+  const bar = $('plat-bar'); if (!bar) return;
+  const counts = state.platformCounts || {};
+  const total = Object.values(counts).reduce((a, b) => a + (+b || 0), 0);
+  bar.innerHTML = platList().map(p =>
+    `<button class="plat-tab ${state.platform === p.key ? 'active' : ''}" role="tab" aria-selected="${state.platform === p.key}"`
+    + ` data-plat="${esc(p.key)}" style="--pc:${platVar(p.key)}">${esc(p.name)}<span class="n">${(+counts[p.key] || 0).toLocaleString()}</span></button>`).join('')
+    + `<button class="plat-tab neutral ${state.platform === 'all' ? 'active' : ''}" role="tab" aria-selected="${state.platform === 'all'}" data-plat="all">`
+    + `All platforms<span class="n">${total.toLocaleString()}</span></button>`
+    + '<button class="plat-tab add" id="plat-add">+ Add platform</button>';
+  bar.querySelectorAll('[data-plat]').forEach(b => b.onclick = () => switchPlatform(b.dataset.plat));
+  $('plat-add').onclick = openAddPlatform;
+}
+
+function switchPlatform(k) {
+  if (state.platform === k) return;
+  state.platform = k;
+  try { localStorage.setItem('lg_platform', k); } catch (e) {}
+  state.page = 1; state.sort = { key: '', dir: 'desc' };
+  renderPlatBar(); applyPlatformUi();
+  if (state.tab !== 'videos') loadEntries();     // Videos are not per platform
+}
+
+/* Instagram-only controls (bio search, link-in-bio, active-in-30-days, IG
+   data) mean nothing for a YouTube channel. Hidden off Instagram — and
+   CLEARED, because a hidden bio filter would silently empty the YouTube list. */
+function applyPlatformUi() {
+  const igish = state.platform === 'instagram' || state.platform === 'all';
+  for (const id of ['link-filter', 'bio-search', 'bio-help', 'active30']) {
+    const e = $(id); if (!e) continue;
+    e.style.display = igish ? '' : 'none';
+    if (!igish) { if ('value' in e && e.tagName !== 'BUTTON') e.value = ''; e.classList.remove('active'); }
+  }
+  const ig = $('ig-btn'); if (ig) ig.style.display = state.platform === 'instagram' ? '' : 'none';
+}
+
+const ID_LABEL = {
+  instagram: ['Instagram profile link or handle', 'instagram.com/theirhandle  ·  @theirhandle'],
+  youtube: ['YouTube channel link or @handle', 'youtube.com/@channel  ·  @channel'],
+  x: ['X profile link or @handle', 'x.com/handle  ·  @handle'],
+  skool: ['Skool community link', 'skool.com/community-name'],
+};
+function prepareAddForm() {
+  const sel = $('f-platform'); if (!sel) return;
+  sel.innerHTML = platList().map(p => `<option value="${esc(p.key)}">${esc(p.name)}</option>`).join('');
+  sel.value = addPlatform();
+  updateAddForm();
+}
+function updateAddForm() {
+  const p = ($('f-platform') && $('f-platform').value) || 'instagram';
+  const [lab, ph] = ID_LABEL[p] || [platName(p) + ' profile link', 'https://…'];
+  $('f-social-label').textContent = lab; $('f-social').placeholder = ph;
+  const fld = (id, label, placeholder) =>
+    `<label class="fld">${label} <span class="opt">(optional)</span><input id="${id}" placeholder="${placeholder}" autocomplete="off"></label>`;
+  $('f-pfields').innerHTML =
+    p === 'youtube' ? fld('f-pdisplay', 'Channel name', 'e.g. Maya Makes UGC') + fld('f-paud', 'Subscribers', 'e.g. 48.2K') + fld('f-plast', 'Last upload', 'e.g. 5 days ago')
+    : p === 'x' ? fld('f-paud', 'Followers', 'e.g. 12.4K')
+    : p === 'skool' ? fld('f-pdisplay', 'Community name', 'e.g. UGC Launchpad') + fld('f-paud', 'Members', 'e.g. 1,240') + fld('f-pprice', 'Price', 'e.g. $39/mo')
+    : '';
+  $('preview').innerHTML = '';
+  checkXplat();
+}
+
+/* Is this email already a lead somewhere? Same platform: it will be refused.
+   Another platform: allowed, and both rows will show "Also on". */
+async function checkXplat() {
+  const box = $('f-xplat'); if (!box) return;
+  const em = ($('f-email').value || '').trim().toLowerCase();
+  box.className = 'add-msg'; box.textContent = '';
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) return;
+  let d;
+  try { d = await api('/api/entries?platform=all&limit=50&q=' + encodeURIComponent(em)); } catch (e) { return; }
+  if (($('f-email').value || '').trim().toLowerCase() !== em) return;   // they kept typing
+  const hits = (d.entries || []).filter(x => (x.email || '').trim().toLowerCase() === em);
+  if (!hits.length) return;
+  const p = $('f-platform').value;
+  const same = hits.some(h => h.platform === p);
+  const where = [...new Set(hits.map(h => platName(h.platform)))].join(', ');
+  box.className = 'add-msg ' + (same ? 'err' : 'ok');
+  box.innerHTML = same
+    ? `Already a ${esc(platName(p))} lead with this email, so it won't be added twice.`
+    : `Already a lead on <b>${esc(where)}</b>. Adding creates a separate ${esc(platName(p))} lead, and both will show “Also on”.`;
+}
+
+/* ── campaigns → platform ─────────────────────────────── */
+async function openCampaignPlatforms() {
+  let bg = $('cp-bg');
+  if (!bg) {
+    bg = document.createElement('div'); bg.id = 'cp-bg'; bg.className = 'modal-bg';
+    bg.innerHTML = '<div class="modal" style="max-width:760px;width:100%"><h3>Campaigns → platform</h3>'
+      + '<div class="foot-hint" style="margin-bottom:8px">A reply to a campaign updates the lead on that campaign\'s platform.</div>'
+      + '<div id="cp-body"><div class="spin">Loading…</div></div>'
+      + '<div class="row" style="margin-top:12px"><button class="note-btn" id="cp-close" style="flex:1">Close</button></div></div>';
+    document.body.appendChild(bg);
+    bg.addEventListener('click', e => { if (e.target === bg) bg.classList.remove('open'); });
+    $('cp-close').onclick = () => bg.classList.remove('open');
+  }
+  bg.classList.add('open');
+  let d;
+  try { d = await api('/api/campaign-platforms'); }
+  catch (e) { $('cp-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const camps = d.campaigns || [];
+  const fromName = camps.filter(c => c.platform_src === 'name').length;
+  const guessed = camps.filter(c => c.platform_src === 'default').length;
+  const opts = k => platList().map(p => `<option value="${esc(p.key)}" ${p.key === k ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  const render = onlyGuessed => {
+    const rows = camps.filter(c => !onlyGuessed || c.platform_src === 'default').map(c => `<tr>`
+      + `<td>${esc(c.name)}</td><td class="num">${c.convs}</td>`
+      + `<td><select data-cp="${esc(c.id)}">${opts(c.platform)}</select></td>`
+      + `<td>${c.platform_src === 'default' ? '<span class="cp-flag">guessed — confirm</span>' : c.platform_src === 'manual' ? '<span class="cp-ok">set by hand</span>' : '<span class="cp-ok">from the name</span>'}</td></tr>`).join('');
+    $('cp-rows').innerHTML = rows || '<tr><td colspan="4" class="muted">Nothing to confirm.</td></tr>';
+    $('cp-rows').querySelectorAll('select[data-cp]').forEach(sel => sel.onchange = () => setCampaignPlatform(sel.dataset.cp, sel.value, sel));
+  };
+  $('cp-body').innerHTML = `<div class="cp-sum"><div><b>${camps.length}</b>campaigns</div><div><b>${fromName}</b>read from the name</div>`
+    + `<div><b>${guessed}</b>no platform in the name</div></div>`
+    + `<div class="cp-tools"><label class="foot-hint"><input type="checkbox" id="cp-only"> Only the ones that need confirming</label></div>`
+    + `<div class="foot-hint" style="margin-bottom:8px">Campaigns with no platform in their name default to <b>Instagram</b>, which matches every lead from before platforms existed.</div>`
+    + `<div class="cp-wrap"><table class="cp-table"><thead><tr><th>Campaign</th><th>Convos</th><th>Platform</th><th></th></tr></thead><tbody id="cp-rows"></tbody></table></div>`;
+  $('cp-only').onchange = e => render(e.target.checked);
+  render(false);
+}
+
+/* Change a campaign's platform, then move its conversations to leads on that
+   platform. The move is paged on the server, so this loops until done. */
+async function setCampaignPlatform(id, platform, sel) {
+  sel.disabled = true;
+  try {
+    const r = await api('/api/campaign-platforms', { method: 'POST', body: { id, platform } });
+    let moved = 0, after = 0;
+    if (r.to_relink) {
+      for (;;) {
+        const p = await api('/api/campaign-platforms/relink', { method: 'POST', body: { id, after } });
+        moved += p.processed || 0;
+        toast(`Moving conversations to ${platName(platform)}… ${moved}/${r.to_relink}`);
+        if (p.done || !p.processed) break;
+        after = p.next;
+      }
+    }
+    toast(`Set to ${platName(platform)}${moved ? ` · ${moved} conversations moved` : ''}`);
+    const flag = sel.closest('tr').lastElementChild; if (flag) flag.innerHTML = '<span class="cp-ok">set by hand</span>';
+    loadEntries();
+  } catch (e) { toast(e.message, true); }
+  finally { sel.disabled = false; }
+}
+
+/* ── add a platform ───────────────────────────────────── */
+function openAddPlatform() {
+  let bg = $('ap-bg');
+  if (!bg) {
+    bg = document.createElement('div'); bg.id = 'ap-bg'; bg.className = 'modal-bg';
+    bg.innerHTML = '<div class="modal"><h3>Add a platform</h3>'
+      + '<label class="fld">Platform name<input id="ap-name" placeholder="e.g. TikTok" maxlength="30" autocomplete="off"></label>'
+      + '<div class="foot-hint">Leads on a new platform are identified by their profile link and get the shared fields: name, email, category, country, owner, stage and notes. Duplicates are matched by email, like everywhere else.</div>'
+      + '<div class="add-msg" id="ap-msg"></div>'
+      + '<div class="row" style="margin-top:12px"><button class="add-btn" id="ap-save" style="flex:1;margin:0">Add platform</button>'
+      + '<button class="note-btn" id="ap-close">Cancel</button></div></div>';
+    document.body.appendChild(bg);
+    bg.addEventListener('click', e => { if (e.target === bg) bg.classList.remove('open'); });
+    $('ap-close').onclick = () => bg.classList.remove('open');
+    $('ap-name').addEventListener('keydown', e => { if (e.key === 'Enter') $('ap-save').click(); });
+    $('ap-save').onclick = async () => {
+      const name = $('ap-name').value.trim();
+      if (!name) { $('ap-name').focus(); return; }
+      $('ap-save').disabled = true; $('ap-msg').textContent = '';
+      try {
+        const r = await api('/api/platforms', { method: 'POST', body: { name } });
+        bg.classList.remove('open'); $('ap-name').value = '';
+        await loadPlatforms();
+        switchPlatform(r.key);
+        toast(name + ' added');
+      } catch (e) { $('ap-msg').className = 'add-msg err'; $('ap-msg').textContent = e.message; }
+      finally { $('ap-save').disabled = false; }
+    };
+  }
+  bg.classList.add('open');
+  setTimeout(() => $('ap-name').focus(), 60);
+}
+
 function renderTabs() {
   $('tab-bar').innerHTML = TABS.map(t => `<button class="tab ${state.tab === t.k ? 'active' : ''}" data-tab="${t.k}">${esc(t.h)}</button>`).join('');
 }
@@ -1591,7 +1873,7 @@ function switchTab(k) {
 /* ── move to Closed / Failed (popup forms) ─────────────────── */
 function openClosePopup(e) {
   $('close-bg').classList.add('open'); $('close-msg').textContent = '';
-  $('cl-id').value = e.id; $('close-who').textContent = '@' + e.handle;
+  $('cl-id').value = e.id; $('close-who').textContent = leadName(e);
   // Delivery status = the Closed-stage sub-nodes (Deliverables Met / Partially… etc.).
   const ds = $('cl-delivstatus');
   ds.innerHTML = '<option value="">— select —</option>' +
@@ -1619,7 +1901,7 @@ async function saveClose() {
 }
 function openFailPopup(e) {
   $('fail-bg').classList.add('open'); $('fail-msg').textContent = '';
-  $('fl-id').value = e.id; $('fail-who').textContent = '@' + e.handle;
+  $('fl-id').value = e.id; $('fail-who').textContent = leadName(e);
   // Reason for failure = the Failed-stage sub-nodes (editable in Statuses & Labels).
   const rs = $('fl-reason');
   rs.innerHTML = '<option value="">— select —</option>' +
@@ -1864,7 +2146,7 @@ async function saveEdit() {
 }
 
 async function deleteEntry(e) {
-  if (!confirm(`Delete @${e.handle}?`)) return;
+  if (!confirm(`Delete ${leadName(e)}?`)) return;
   try { await api('/api/entries', { method: 'DELETE', body: { id: e.id } }); toast('Deleted'); await loadEntries(); }
   catch (err) { toast(err.message); }
 }
@@ -2111,11 +2393,11 @@ async function runBulk() {
   if (!bulkRows.length) { $('bulk-parsed').textContent = 'Nothing to add.'; return; }
   const btn = $('bulk-run'); btn.disabled = true; const old = btn.textContent; btn.textContent = 'Checking…';
   try {
-    const res = await api('/api/entries/bulk', { method: 'POST', body: { rows: bulkRows } });
+    const res = await api('/api/entries/bulk', { method: 'POST', body: { rows: bulkRows, platform: addPlatform() } });
     renderBulkReport(res);
     // Say how much Instagram data came back, and what is still outstanding —
     // a partial enrichment that nobody mentions is how the backlog grew.
-    let msg = `Added ${res.added} · ${res.duplicate} dupes`;
+    let msg = `Added ${res.added} to ${platName(addPlatform())} · ${res.duplicate} dupes`;
     if (res.enriched) msg += ` · IG data for ${res.enriched}`;
     if (res.enrich_pending) msg += ` · ${res.enrich_pending} awaiting IG data`;
     toast(msg);
@@ -2224,6 +2506,7 @@ async function runActivity() {
   if (from) p.set('from', from); if (to) p.set('to', to);
   let s;
   // /api/activity = teammate-ADDED leads only, attributed to the adder.
+  if (state.platform) p.set('platform', state.platform);
   try { s = await api('/api/activity?' + p.toString()); }
   catch (e) { $('activity-body').innerHTML = `<div class="act-empty">${esc(e.message)}</div>`; return; }
   renderActivity(s);
@@ -2295,6 +2578,7 @@ async function loadFunnel() {
   const p = new URLSearchParams();
   if (from) p.set('from', from); if (to) p.set('to', to);
   let d;
+  if (state.platform) p.set('platform', state.platform);
   try { d = await api('/api/funnel?' + p.toString()); }
   catch (e) { $('funnel-overall').innerHTML = `<div class="act-empty">${esc(e.message)}</div>`; return; }
   $('fn-note').textContent = `${d.total_known.toLocaleString()} CRM-known leads` + ((from || to) ? ` · ${from || '…'} → ${to || '…'}` : ' · all time');
@@ -2383,6 +2667,7 @@ function wire() {
      'date-from', 'date-to'].forEach(id => { const e = $(id); if (e) e.value = ''; });
     markPreset('all');
     if ($('active30')) $('active30').classList.remove('active');
+    state.dupOnly = false; $('dup-only').classList.remove('toggle-on'); $('dup-only').setAttribute('aria-pressed', 'false');
     loadEntries();
   };
   $('owner-filter').onchange = loadEntries;
@@ -2409,7 +2694,7 @@ function wire() {
   if ($('country-filter')) $('country-filter').onchange = loadEntries;
 
   // Add-lead modal
-  $('open-add-btn').onclick = () => { $('add-bg').classList.add('open'); setTimeout(() => $('f-social').focus(), 60); };
+  $('open-add-btn').onclick = () => { prepareAddForm(); $('add-bg').classList.add('open'); setTimeout(() => $('f-social').focus(), 60); };
   $('add-close').onclick = () => $('add-bg').classList.remove('open');
 
   // Close / Fail popups
@@ -2523,6 +2808,15 @@ function wire() {
 
   // Team modal
   $('ig-btn').onclick = openIgModal;
+  $('campplat-btn').onclick = openCampaignPlatforms;
+  $('dup-only').onclick = () => {
+    state.dupOnly = !state.dupOnly;
+    $('dup-only').classList.toggle('toggle-on', state.dupOnly);
+    $('dup-only').setAttribute('aria-pressed', String(state.dupOnly));
+    loadEntries();
+  };
+  $('f-platform').onchange = updateAddForm;
+  $('f-email').addEventListener('input', debounce(checkXplat, 400));
   $('ig-close').onclick = () => $('ig-bg').classList.remove('open');
   $('team-btn').onclick = openTeam;
   $('team-close').onclick = () => $('team-bg').classList.remove('open');

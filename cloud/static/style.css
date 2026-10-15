@@ -10,6 +10,7 @@
    Set on <html> as data-theme by the inline script in index.html, which runs
    before first paint so the page never flashes the wrong palette. */
 :root {
+  --plat-instagram: #d62976; --plat-youtube: #b0060f; --plat-x: #1b2432; --plat-skool: #0e9f8f; --plat-custom: #5b6b80;
   --bg: #f2f5f9;
   --bg2: #ffffff;
   --bg3: #eef1f7;
@@ -35,6 +36,7 @@
   --tint-purple: rgba(124,77,219,.12); --bd-purple: rgba(124,77,219,.34);
 }
 :root[data-theme="dark"] {
+  --plat-instagram: #ff4f8b; --plat-youtube: #ff2020; --plat-x: #e6edf3; --plat-skool: #2ed3be; --plat-custom: #9aa7b8;
   --bg: #000000;
   --bg2: #0e0e11;
   --bg3: #17171c;
@@ -717,3 +719,56 @@ td.ctry { color: var(--muted); }
 .syntax-table td { padding: 6px 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .syntax-table td:first-child { width: 42%; white-space: nowrap; }
 .syntax-table td:last-child { color: var(--muted); }
+
+/* ── platforms ───────────────────────────────────────────────
+   One row above the stage tabs. Each name carries its brand colour; the
+   active one is full strength with an underline in that colour. */
+.plat-bar {
+  display: flex; align-items: stretch; gap: 2px; padding: 0 12px;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  overflow-x: auto; overflow-y: hidden; flex: 0 0 auto;
+}
+.plat-tab {
+  border: 0; background: none; padding: 10px 14px 8px; display: flex; align-items: baseline; gap: 7px;
+  font-size: 13.5px; font-weight: 600; white-space: nowrap; cursor: pointer;
+  color: var(--pc, var(--muted)); opacity: .72;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.plat-tab:hover { opacity: 1; }
+.plat-tab.active { opacity: 1; border-bottom-color: var(--pc, var(--accent)); }
+.plat-tab.neutral { --pc: var(--text); }
+.plat-tab .n { font-weight: 500; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.plat-tab.add { --pc: var(--accent); font-weight: 500; opacity: 1; }
+
+/* Platform names inside the grid and popups: coloured text, nothing else. */
+.pn { color: var(--pc, var(--text)); font-weight: 600; }
+.also-on { display: inline-flex; gap: 10px; }
+table.grid td.also, table.grid th.also { min-width: 96px; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.hbtn.toggle-on { border-color: var(--accent); color: var(--accent); }
+
+/* Same email on other platforms, in the lead popup. */
+.xplat-sec { margin: 0; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.xplat { display: grid; gap: 4px; max-height: 96px; overflow: auto; }
+.xplat-row {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr) 110px minmax(0, 1fr) auto;
+  gap: 10px; align-items: center; padding: 4px 10px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--bg); font-size: 12px;
+}
+.xplat-row .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xplat-row button { justify-self: end; }
+.conv-plat { font-size: 11.5px; margin-left: 6px; }
+
+/* Campaigns -> platform. */
+.cp-sum { display: flex; gap: 22px; flex-wrap: wrap; margin: 4px 0 12px; font-size: 12.5px; color: var(--muted); }
+.cp-sum b { display: block; font-size: 19px; color: var(--text); font-variant-numeric: tabular-nums; }
+.cp-wrap { max-height: 52vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+.cp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.cp-table th, .cp-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+.cp-table th { position: sticky; top: 0; background: var(--bg3); color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .4px; font-weight: 600; }
+.cp-table td.num { text-align: right; }
+.cp-flag { color: var(--orange); font-weight: 600; }
+.cp-ok { color: var(--muted); }
+.cp-tools { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }

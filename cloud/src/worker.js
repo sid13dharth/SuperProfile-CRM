@@ -22,6 +22,9 @@ import {
   runRateExtraction, runBodyBackfill, runReplyReconcile, fetchLeadEmails, USD_PER, AUTO_POC_NAMES,
 } from './sync.js';
 import { enrichRows, IG_STEP_LEADS } from './hiker.js';
+import {
+  IG, BUILTIN, BUILTIN_KEYS, handleKey, emailKey, displayId, detectCampaignPlatform, slugPlatform,
+} from './platforms.js';
 
 const SESSION_TTL_DAYS = 30;
 const PBKDF2_ITERATIONS = 100000; // Workers cap PBKDF2 at 100k iterations.
@@ -545,6 +548,65 @@ function accFunnel(acc, f) { for (const k in f) acc[k] = (acc[k] || 0) + f[k]; }
 
 /* ── row shaping ───────────────────────────────────────────── */
 
+/* ── platforms ─────────────────────────────────────────── */
+
+/* "48.2K" / "1,240" / "2.1M" -> 48200 / 1240 / 2100000. Blank is null, which
+   the grid shows as a dash: unknown is not the same as zero. */
+function parseCount(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase().replace(/[,\s]/g, '');
+  if (!s) return null;
+  const m = s.match(/^(\d+(?:\.\d+)?)([km]?)$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]) * (m[2] === 'k' ? 1e3 : m[2] === 'm' ? 1e6 : 1);
+  return Math.round(n);
+}
+
+// The platform filter a listing asked for: "" or "all" means every platform.
+function platformClause(p) {
+  const v = String(p || '').trim().toLowerCase();
+  return v && v !== 'all' ? v : '';
+}
+
+// Platforms in tab order. Falls back to the built-ins if the table is empty.
+async function listPlatforms(env) {
+  const { results } = await env.DB.prepare('SELECT key, name, builtin, sort FROM platforms ORDER BY sort, name').all();
+  return results.length ? results : BUILTIN.map((p, i) => ({ key: p.key, name: p.name, builtin: 1, sort: i + 1 }));
+}
+
+// A platform from a request, checked against the ones that exist.
+async function wantPlatform(env, raw) {
+  const p = String(raw || '').trim().toLowerCase();
+  if (!p) return IG;
+  const keys = new Set((await listPlatforms(env)).map(x => x.key));
+  if (!keys.has(p)) throw new ApiError(400, 'Unknown platform: ' + p);
+  return p;
+}
+
+/* Give every campaign without one a platform, read from its name. A choice
+   someone made ('manual') is never touched; 'default' means the name said
+   nothing and Instagram was assumed, so it is flagged for confirmation. */
+async function ensureCampaignPlatforms(env) {
+  const { results } = await env.DB.prepare("SELECT id, name FROM campaigns WHERE platform = ''").all();
+  if (!results.length) return 0;
+  const extra = (await listPlatforms(env)).filter(p => !BUILTIN_KEYS.has(p.key));
+  const stmts = results.map(c => {
+    const [plat, sure] = detectCampaignPlatform(c.name, extra);
+    return env.DB.prepare("UPDATE campaigns SET platform=?, platform_src=? WHERE id=? AND platform=''")
+      .bind(plat, sure ? 'name' : 'default', c.id);
+  });
+  for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
+  return results.length;
+}
+
+/* Emails that exist on more than one platform, mapped to those platforms.
+   One grouped scan of ~25k rows; cheap enough to run per listing. */
+async function crossPlatformEmails(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT email_norm, GROUP_CONCAT(DISTINCT platform) AS plats FROM entries WHERE email_norm != ''
+     GROUP BY email_norm HAVING COUNT(DISTINCT platform) > 1`).all();
+  return new Map(results.map(r => [r.email_norm, String(r.plats || '').split(',')]));
+}
+
 function entryDict(row, crmUrl) {
   let campaigns = [];
   try { campaigns = JSON.parse(row.crm_campaigns || '[]'); } catch { campaigns = []; }
@@ -596,6 +658,12 @@ function entryDict(row, crmUrl) {
     ig_bio: row.ig_bio || '',
     ig_link: row.ig_link || '',
     ig_link_domain: row.ig_link_domain || '',
+    platform: row.platform || IG,
+    profile: displayId(row.platform || IG, row.handle_norm),
+    p_display: row.p_display || '',
+    p_audience: row.p_audience === null || row.p_audience === undefined ? null : row.p_audience,
+    p_last_activity: row.p_last_activity || '',
+    p_price: row.p_price || '',
     // Combined verdict for the UI (kept independent of the dup signal).
     verdict: verdictFor({ in_master: (row.source === 'master') || !!row.in_master, dup: false }, crm),
     view_conversation: (crm.known && row.email && crmUrl)
@@ -1129,6 +1197,8 @@ async function handleApi(request, env, url) {
     const { from, to, startIso, endIso } = istRange(p.get('from'), p.get('to'));
     let sql = 'SELECT category, crm_contacted, crm_replied, crm_status, crm_label, crm_deal, stage, position, crm_campaigns FROM entries WHERE crm_known = 1';
     const args = [];
+    const fPlat = platformClause(p.get('platform'));
+    if (fPlat) { sql += ' AND platform = ?'; args.push(fPlat); }
     if (startIso) { sql += ' AND created_at >= ?'; args.push(startIso); }
     if (endIso) { sql += ' AND created_at <= ?'; args.push(endIso); }
     const { results } = await env.DB.prepare(sql).bind(...args).all();
@@ -1159,6 +1229,8 @@ async function handleApi(request, env, url) {
     const { from, to, startIso, endIso } = istRange(p.get('from'), p.get('to'));
     let sql = 'SELECT created_at, email_norm, lead_owner FROM entries WHERE 1=1';
     const args = [];
+    const sPlat = platformClause(p.get('platform'));
+    if (sPlat) { sql += ' AND platform = ?'; args.push(sPlat); }
     if (startIso) { sql += ' AND created_at >= ?'; args.push(startIso); }
     if (endIso) { sql += ' AND created_at <= ?'; args.push(endIso); }
     const { results } = await env.DB.prepare(sql).bind(...args).all();
@@ -1251,6 +1323,8 @@ async function handleApi(request, env, url) {
     const { from, to, startIso, endIso } = istRange(p.get('from'), p.get('to'));
     let sql = "SELECT created_at, email_norm, created_by, lead_owner FROM entries WHERE source IN ('added','master')";
     const args = [];
+    const aPlat = platformClause(p.get('platform'));
+    if (aPlat) { sql += ' AND platform = ?'; args.push(aPlat); }
     if (startIso) { sql += ' AND created_at >= ?'; args.push(startIso); }
     if (endIso) { sql += ' AND created_at <= ?'; args.push(endIso); }
     const [{ results }, usersRes] = await Promise.all([
@@ -1351,8 +1425,13 @@ async function handleApi(request, env, url) {
 
   if (path === '/api/entries' && method === 'POST') {
     const user = await requireUser(env, request);
-    const handle = normHandle(body.social_url || body.handle || '');
-    if (!handle) throw new ApiError(400, 'Enter a valid Instagram profile link or handle');
+    const platform = await wantPlatform(env, body.platform);
+    const hk = handleKey(platform, body.social_url || body.handle || '', normHandle);
+    if (!hk) {
+      const pname = ((await listPlatforms(env)).find(x => x.key === platform) || { name: platform }).name;
+      throw new ApiError(400, `Enter a valid ${pname} profile link or handle`);
+    }
+    const handle = hk.key;
     const email = normEmail(body.email);
     const emailRaw = (body.email || '').trim();
     const firstName = (body.first_name || '').trim();
@@ -1373,10 +1452,11 @@ async function handleApi(request, env, url) {
       });
     }
 
-    // Duplicate-by-email: the same email is already a lead (possibly under a
-    // different handle). Treat as existing instead of double-storing the person.
+    /* Duplicate-by-email, WITHIN this platform: the same person already here
+       under another handle. The same email on a different platform is allowed
+       — that is the point of platforms — and shows as "Also on" instead. */
     if (email) {
-      const byEmail = await env.DB.prepare('SELECT * FROM entries WHERE email_norm=? ORDER BY id LIMIT 1').bind(email).first();
+      const byEmail = await env.DB.prepare('SELECT * FROM entries WHERE email_norm=? AND platform=? ORDER BY id LIMIT 1').bind(email, platform).first();
       if (byEmail) {
         return json({
           saved: false,
@@ -1391,7 +1471,7 @@ async function handleApi(request, env, url) {
 
     // Prior-conversation snapshot from the LOCAL merged conversations (retired the
     // external CRM lookup — never blocks the save).
-    const local = await localCrm(env, email, handle);
+    const local = await localCrm(env, email, handle, platform);
     const sig = local.signal;
     const crmResults = local.results;
     const snap = crmSnapshot(sig);
@@ -1411,13 +1491,16 @@ async function handleApi(request, env, url) {
       `INSERT INTO entries
         (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, country, country_src, lead_owner, lead_manager, created_by, created_at, source, in_master, stage, position,
          crm_known, crm_contacted, crm_replied, crm_status, crm_poc, crm_campaigns,
-         crm_last_contact_at, crm_last_reply_at, crm_checked_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?)
+         crm_last_contact_at, crm_last_reply_at, crm_checked_at,
+         platform, p_display, p_audience, p_last_activity, p_price)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(handle_norm) DO NOTHING`)
-      .bind(handle, (body.social_url || body.handle || '').trim(), canonicalUrl(handle),
+      .bind(handle, (body.social_url || body.handle || '').trim(), hk.url,
             emailRaw, email, firstName, notes, category, country, country ? 'manual' : '', ownerName(user), manager, user.username, created, initStage, initPos,
             snap.crm_known, snap.crm_contacted, snap.crm_replied, snap.crm_status, snap.crm_poc,
-            snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at)
+            snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at,
+            platform, String(body.p_display || '').trim(), parseCount(body.p_audience),
+            String(body.p_last_activity || '').trim(), String(body.p_price || '').trim())
       .run();
 
     if (!res.meta.changes) {
@@ -1436,7 +1519,7 @@ async function handleApi(request, env, url) {
     // Best-effort Instagram enrichment for the lead just added (2 HikerAPI
     // calls). Deliberately swallowed on failure — a missing follower count must
     // never cost someone the save.
-    try {
+    if (platform === IG) try {
       const fresh = await env.DB.prepare('SELECT id, handle_norm, ig_user_id FROM entries WHERE handle_norm=?').bind(handle).first();
       if (fresh) await enrichRows(env, [fresh]);
     } catch (e) { console.log('ig enrich on add failed:', e && e.message); }
@@ -1453,7 +1536,7 @@ async function handleApi(request, env, url) {
 
   if (path === '/api/entries/bulk' && method === 'POST') {
     const user = await requireUser(env, request);
-    return json(await bulkAdd(env, user, Array.isArray(body.rows) ? body.rows : []));
+    return json(await bulkAdd(env, user, Array.isArray(body.rows) ? body.rows : [], await wantPlatform(env, body.platform)));
   }
 
   /* — list entries — */
@@ -1463,6 +1546,12 @@ async function handleApi(request, env, url) {
     const p = url.searchParams;
     let sql = 'SELECT * FROM entries WHERE 1=1';
     const args = [];
+    const platF = platformClause(p.get('platform'));
+    if (platF) { sql += ' AND platform = ?'; args.push(platF); }
+    // Only people whose email is also a lead on another platform.
+    if ((p.get('dup') || '') === '1') {
+      sql += " AND email_norm IN (SELECT email_norm FROM entries WHERE email_norm != '' GROUP BY email_norm HAVING COUNT(DISTINCT platform) > 1)";
+    }
     const owner = p.get('owner') || '';
     /* Every exact-match filter folds case. It costs the index on these
        columns, but a scan of 24k rows is ~20-40ms here and a filter that
@@ -1507,9 +1596,9 @@ async function handleApi(request, env, url) {
          to '' in JavaScript and SQLite rejects it: "ESCAPE expression must be
          a single character". */
       sql += " AND (handle_norm LIKE ? ESCAPE '\\' OR email_norm LIKE ? ESCAPE '\\'"
-        + " OR lower(first_name) LIKE ? ESCAPE '\\')";
+        + " OR lower(first_name) LIKE ? ESCAPE '\\' OR lower(p_display) LIKE ? ESCAPE '\\')";
       const t = likeTerm(q);
-      args.push(t, t, t);
+      args.push(t, t, t, t);
     }
     // Link-in-bio platform filter ("show me everyone on stan.store").
     // Matches the stored host exactly, so it uses the index rather than a LIKE scan.
@@ -1569,12 +1658,20 @@ async function handleApi(request, env, url) {
       env.DB.prepare('SELECT COUNT(*) n FROM entries').first(),
       env.DB.prepare(countSql).bind(...args).first(),
     ]);
+    const { results: platCounts } = await env.DB.prepare('SELECT platform, COUNT(*) n FROM entries GROUP BY platform').all();
+    const cross = await crossPlatformEmails(env);
     const crmUrl = env.CRM_URL || '';
     // Handles that have posted for us, so the grid can badge them.
     const { results: pv } = await env.DB.prepare("SELECT DISTINCT handle FROM videos WHERE handle != ''").all();
     const partners = new Set(pv.map(r => r.handle));
     return json({
-      entries: results.map(r => ({ ...entryDict(r, crmUrl), partner: partners.has(r.handle_norm) })),
+      entries: results.map(r => ({
+        ...entryDict(r, crmUrl),
+        partner: partners.has(r.handle_norm),
+        // The other platforms this email is a lead on — the "Also on" column.
+        also_on: (cross.get(r.email_norm) || []).filter(x => x !== (r.platform || IG)),
+      })),
+      platform_counts: Object.fromEntries(platCounts.map(r => [r.platform, r.n])),
       owners: ownersRes.results.map(o => o.lead_owner),
       countries: ctryRes.results.map(r => ({ name: r.country, n: r.n })),
       // {key,label} pairs — the grid shows label, filters/saves by key.
@@ -1733,7 +1830,7 @@ async function handleApi(request, env, url) {
     if (ids.length > IG_STEP_LEADS) throw new ApiError(400, `At most ${IG_STEP_LEADS} leads per request`);
     const qs = ids.map(() => '?').join(',');
     const { results } = await env.DB.prepare(
-      `SELECT id, handle_norm, ig_user_id FROM entries WHERE id IN (${qs})`).bind(...ids).all();
+      `SELECT id, handle_norm, ig_user_id FROM entries WHERE id IN (${qs}) AND platform = 'instagram'`).bind(...ids).all();
     if (!results.length) return json({ done: 0, entries: [] });
     const outcomes = await enrichRows(env, results);
     await bumpVersion(env);
@@ -1750,7 +1847,7 @@ async function handleApi(request, env, url) {
     if (!user.is_admin) throw new ApiError(403, 'Admins only');
     // 'engaged' = leads actually in play; 'all' = the whole table.
     const engagedOnly = (body.scope || 'engaged') !== 'all';
-    const where = `ig_checked_at = ''` + (engagedOnly ? ` AND stage IN ('Responses','Closed')` : '');
+    const where = `ig_checked_at = '' AND platform = 'instagram'` + (engagedOnly ? ` AND stage IN ('Responses','Closed')` : '');
     const remainingOf = async () => (await env.DB.prepare(
       `SELECT COUNT(*) c FROM entries WHERE ${where}`).first()).c || 0;
     const before = await remainingOf();
@@ -1770,8 +1867,8 @@ async function handleApi(request, env, url) {
     await requireUser(env, request);
     const row = await env.DB.prepare(
       `SELECT
-         (SELECT COUNT(*) FROM entries WHERE ig_checked_at = '' AND stage IN ('Responses','Closed')) AS engaged_pending,
-         (SELECT COUNT(*) FROM entries WHERE ig_checked_at = '') AS all_pending,
+         (SELECT COUNT(*) FROM entries WHERE ig_checked_at = '' AND platform = 'instagram' AND stage IN ('Responses','Closed')) AS engaged_pending,
+         (SELECT COUNT(*) FROM entries WHERE ig_checked_at = '' AND platform = 'instagram') AS all_pending,
          (SELECT COUNT(*) FROM entries WHERE ig_status = 'ok') AS enriched`).first();
     return json({
       engaged_pending: row ? row.engaged_pending : 0,
@@ -1810,7 +1907,7 @@ async function handleApi(request, env, url) {
 
     // One page of leads, ordered by id (stable cursor).
     const { results: rows } = await env.DB.prepare(
-      'SELECT id, email_norm, handle_norm, position_source FROM entries WHERE id > ? ORDER BY id LIMIT ?')
+      'SELECT id, email_norm, handle_norm, position_source, platform FROM entries WHERE id > ? ORDER BY id LIMIT ?')
       .bind(afterId, batch).all();
     if (!rows.length) return json({ ok: true, processed: 0, updated: 0, after_id: afterId, total, done: true });
 
@@ -1820,23 +1917,27 @@ async function handleApi(request, env, url) {
     // Re-derive each lead's prior-conversation signal from the LOCAL merged
     // conversations (retired the external CRM). Batched by email + handle.
     const CHUNK = 90; // D1 caps bound parameters per query near 100
+    // Signals are per platform: keyed "platform|email", so a YouTube reply only
+    // ever reaches the YouTube row. Handles are Instagram-only (stored bare).
     const emails = [...new Set(rows.map(r => r.email_norm).filter(Boolean))];
-    const handles = [...new Set(rows.map(r => r.handle_norm).filter(Boolean))];
+    const handles = [...new Set(rows.filter(r => (r.platform || IG) === IG).map(r => r.handle_norm).filter(Boolean))];
     const groupsByEmail = {}, groupsByHandle = {};
     for (let i = 0; i < emails.length; i += CHUNK) {
       const chunk = emails.slice(i, i + CHUNK);
       const { results } = await env.DB.prepare(
-        `SELECT email, handle_norm, ${CONV_SIG_COLS} FROM conversations WHERE email IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
-      for (const r of results) if (r.email) (groupsByEmail[r.email] = groupsByEmail[r.email] || []).push(r);
+        `SELECT v.email, v.handle_norm, ${CONV_SIG_COLS.split(', ').map(k => 'v.' + k).join(', ')}, COALESCE(NULLIF(c.platform, ''), 'instagram') AS cplat
+           FROM conversations v LEFT JOIN campaigns c ON c.id = v.campaign_id WHERE v.email IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+      for (const r of results) if (r.email) { const k = r.cplat + '|' + r.email; (groupsByEmail[k] = groupsByEmail[k] || []).push(r); }
     }
     for (let i = 0; i < handles.length; i += CHUNK) {
       const chunk = handles.slice(i, i + CHUNK);
       const { results } = await env.DB.prepare(
-        `SELECT email, handle_norm, ${CONV_SIG_COLS} FROM conversations WHERE handle_norm IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+        `SELECT v.email, v.handle_norm, ${CONV_SIG_COLS.split(', ').map(k => 'v.' + k).join(', ')}
+           FROM conversations v LEFT JOIN campaigns c ON c.id = v.campaign_id WHERE v.handle_norm IN (${chunk.map(() => '?').join(',')}) AND COALESCE(NULLIF(c.platform, ''), 'instagram') = 'instagram'`).bind(...chunk).all();
       for (const r of results) if (r.handle_norm) (groupsByHandle[r.handle_norm] = groupsByHandle[r.handle_norm] || []).push(r);
     }
     const byEmail = {}, byHandle = {};
-    for (const em of emails) { const s = sigFromConvRows(groupsByEmail[em], em); if (s) byEmail[em] = s; }
+    for (const [k, list] of Object.entries(groupsByEmail)) { const s = sigFromConvRows(list, k.split('|')[1]); if (s) byEmail[k] = s; }
     for (const h of handles) { const s = sigFromConvRows(groupsByHandle[h], h); if (s) byHandle[h] = s; }
 
     /* A `conversations` row only exists once a lead REPLIES, so everyone we
@@ -1848,27 +1949,28 @@ async function handleApi(request, env, url) {
     for (let i = 0; i < emails.length; i += CHUNK) {
       const chunk = emails.slice(i, i + CHUNK);
       const { results } = await env.DB.prepare(
-        `SELECT lead_email, MAX(timestamp_email) AS last_sent FROM emails
-          WHERE lead_email IN (${chunk.map(() => '?').join(',')}) AND ue_type IN (1,3)
-          GROUP BY lead_email`).bind(...chunk).all();
-      for (const r of results) if (r.lead_email) sentByEmail[r.lead_email] = r.last_sent || '';
+        `SELECT m.lead_email, COALESCE(NULLIF(c.platform, ''), 'instagram') AS cplat, MAX(m.timestamp_email) AS last_sent FROM emails m LEFT JOIN campaigns c ON c.id = m.campaign_id
+          WHERE m.lead_email IN (${chunk.map(() => '?').join(',')}) AND m.ue_type IN (1,3)
+          GROUP BY m.lead_email, cplat`).bind(...chunk).all();
+      for (const r of results) if (r.lead_email) sentByEmail[r.cplat + '|' + r.lead_email] = r.last_sent || '';
     }
 
     let updated = 0;
     const stmts = [];
     for (const row of rows) {
-      let sig = (row.email_norm && byEmail[row.email_norm] && byEmail[row.email_norm].known)
-        ? byEmail[row.email_norm]
+      const ek = (row.platform || IG) + '|' + row.email_norm;
+      let sig = (row.email_norm && byEmail[ek] && byEmail[ek].known)
+        ? byEmail[ek]
         : (row.handle_norm && byHandle[row.handle_norm] && byHandle[row.handle_norm].known)
           ? byHandle[row.handle_norm]
-          : (byEmail[row.email_norm] || byHandle[row.handle_norm] || null);
+          : (byEmail[ek] || byHandle[row.handle_norm] || null);
       // Contacted, never replied. Deliberately leaves status/label/campaigns
       // empty and replied=0, so the stage logic below does NOT move the lead.
-      if ((!sig || !sig.known) && row.email_norm && sentByEmail[row.email_norm] !== undefined) {
+      if ((!sig || !sig.known) && row.email_norm && sentByEmail[ek] !== undefined) {
         sig = {
           type: 'local', query: row.email_norm, known: true, contacted: true, replied: false,
           status: '', poc: '', label: '', first_name: '', campaigns: [],
-          last_contact_at: sentByEmail[row.email_norm] || '', last_reply_at: '',
+          last_contact_at: sentByEmail[ek] || '', last_reply_at: '',
         };
       }
       const s = crmSnapshot(sig);
@@ -2244,6 +2346,161 @@ async function handleApi(request, env, url) {
   // Full lead detail for the in-app conversation popup (READ-ONLY): the entire
   // email thread across all campaigns + notes + activity + linked videos + every
   // lead field. Sourced entirely from the LOCAL merged data (no external CRM).
+  /* — platforms — */
+  if (path === '/api/platforms' && method === 'GET') {
+    await requireUser(env, request);
+    const plats = await listPlatforms(env);
+    const { results: counts } = await env.DB.prepare('SELECT platform, COUNT(*) n FROM entries GROUP BY platform').all();
+    const byP = Object.fromEntries(counts.map(r => [r.platform, r.n]));
+    return json({
+      platforms: plats.map(p => ({ ...p, count: byP[p.key] || 0 })),
+      total: counts.reduce((a, r) => a + r.n, 0),
+    });
+  }
+
+  // Anyone can add a platform: it is a list name, not a permission.
+  if (path === '/api/platforms' && method === 'POST') {
+    const user = await requireUser(env, request);
+    const name = String(body.name || '').trim();
+    if (!name || name.length > 30) throw new ApiError(400, 'Give the platform a name, up to 30 characters');
+    const key = slugPlatform(name);
+    if (!key) throw new ApiError(400, 'Use letters or numbers in the platform name');
+    const clash = await env.DB.prepare('SELECT name FROM platforms WHERE key=? OR lower(name)=?').bind(key, name.toLowerCase()).first();
+    if (clash) throw new ApiError(409, clash.name + ' already exists');
+    const mx = await env.DB.prepare('SELECT COALESCE(MAX(sort), 0) m FROM platforms').first();
+    await env.DB.prepare('INSERT INTO platforms (key, name, builtin, sort, created_by, created_at) VALUES (?,?,0,?,?,?)')
+      .bind(key, name, (mx.m || 0) + 1, ownerName(user), nowIso()).run();
+    // Campaigns that only defaulted to Instagram get re-read, so one named
+    // after the new platform is picked up as it.
+    await env.DB.prepare("UPDATE campaigns SET platform='', platform_src='' WHERE platform_src='default'").run();
+    await ensureCampaignPlatforms(env);
+    await bumpVersion(env);
+    return json({ ok: true, key, name });
+  }
+
+  /* — which platform each campaign is for — */
+  if (path === '/api/campaign-platforms' && method === 'GET') {
+    await requireUser(env, request);
+    await ensureCampaignPlatforms(env);
+    const { results } = await env.DB.prepare(
+      `SELECT c.id, c.name, c.platform, c.platform_src,
+              (SELECT COUNT(*) FROM conversations v WHERE v.campaign_id = c.id) AS convs
+         FROM campaigns c ORDER BY convs DESC, c.name`).all();
+    return json({ campaigns: results });
+  }
+
+  if (path === '/api/campaign-platforms' && method === 'POST') {
+    await requireUser(env, request);
+    const plat = await wantPlatform(env, body.platform);
+    const id = String(body.id || '');
+    const r = await env.DB.prepare("UPDATE campaigns SET platform=?, platform_src='manual' WHERE id=?").bind(plat, id).run();
+    if (!r.meta.changes) throw new ApiError(404, 'Campaign not found');
+    await bumpVersion(env);
+    const n = await env.DB.prepare('SELECT COUNT(*) c FROM conversations WHERE campaign_id=?').bind(id).first();
+    return json({ ok: true, to_relink: (n && n.c) || 0 });
+  }
+
+  /* Re-attach one campaign's conversations after its platform changes. Paged,
+     because each conversation is several queries and a 500-reply campaign
+     would blow the per-request subrequest cap in one go. The client loops. */
+  if (path === '/api/campaign-platforms/relink' && method === 'POST') {
+    await requireUser(env, request);
+    const id = String(body.id || '');
+    const after = Number(body.after || 0) || 0;
+    const { results } = await env.DB.prepare(
+      'SELECT rowid AS rid, key FROM conversations WHERE campaign_id=? AND rowid > ? ORDER BY rowid LIMIT 60').bind(id, after).all();
+    if (!results.length) return json({ done: true, processed: 0 });
+    await linkConversations(env, results.map(r => r.key));
+    await bumpVersion(env);
+    return json({ done: results.length < 60, processed: results.length, next: results[results.length - 1].rid });
+  }
+
+  /* One-off: move conversations on YouTube / Skool / X campaigns onto leads
+     on those platforms. Before platforms existed they were all filed as
+     Instagram — or, for 184 of them, never attached to any lead at all.
+
+     ?apply=0 reports what would happen and changes nothing.
+     ?apply=1 does it, paged: call repeatedly until done.
+
+     A lead auto-created from the reply alone (source=crm, never contacted
+     on Instagram, one platform) is converted in place so its stage, notes
+     and labels survive. A real Instagram lead keeps its row and gains a
+     separate lead on the other platform — the duplicate this exists for. */
+  if (path === '/api/admin/platform-migrate' && method === 'POST') {
+    const user = await requireUser(env, request);
+    if (!user.is_admin) throw new ApiError(403, 'Admins only');
+    const apply = !!body.apply;
+    await ensureCampaignPlatforms(env);
+    const { results: cps } = await env.DB.prepare("SELECT id, platform FROM campaigns WHERE platform != 'instagram' AND platform != ''").all();
+    const nonIg = Object.fromEntries(cps.map(c => [c.id, c.platform]));
+    const ids = Object.keys(nonIg);
+    if (!ids.length) return json({ done: true, conversations: 0 });
+    const ph = ids.map(() => '?').join(',');
+    const { results: convs } = await env.DB.prepare(
+      `SELECT v.key, v.campaign_id, v.entry_id, v.email, e.platform AS eplat, e.source AS esrc, e.id AS eid
+         FROM conversations v LEFT JOIN entries e ON e.id = v.entry_id
+        WHERE v.campaign_id IN (${ph})`).bind(...ids).all();
+    // Already on the right platform: nothing to do. No email: cannot be
+    // matched to anyone on any platform, so it is reported, never retried.
+    const noEmail = convs.filter(c => !String(c.email || '').trim());
+    const todo = convs.filter(c => String(c.email || '').trim() && (!c.eid || c.eplat !== nonIg[c.campaign_id]));
+
+    // Which Instagram rows can be converted in place.
+    const byEntry = {};
+    for (const c of convs) if (c.eid) (byEntry[c.eid] = byEntry[c.eid] || []).push(c);
+    const eids = Object.keys(byEntry).map(Number);
+    const igConvsOf = {};
+    if (eids.length) {
+      for (let i = 0; i < eids.length; i += 80) {
+        const ch = eids.slice(i, i + 80);
+        const { results: all } = await env.DB.prepare(
+          `SELECT v.entry_id, c.platform FROM conversations v JOIN campaigns c ON c.id = v.campaign_id WHERE v.entry_id IN (${ch.map(() => '?').join(',')})`).bind(...ch).all();
+        for (const r of all) if ((r.platform || 'instagram') === 'instagram') igConvsOf[r.entry_id] = true;
+      }
+    }
+    const convert = [];
+    for (const [eid, list] of Object.entries(byEntry)) {
+      const e = list[0];
+      const plats = [...new Set(list.map(c => nonIg[c.campaign_id]))];
+      if (e.eplat === 'instagram' && e.esrc === 'crm' && !igConvsOf[eid] && plats.length === 1) convert.push({ eid: +eid, plat: plats[0], email: e.email });
+    }
+
+    // A lead already on that platform with this email (say, imported from a
+    // sheet) wins: converting would make a second one. The relink below
+    // attaches the conversation to it instead.
+    for (let i = convert.length - 1; i >= 0; i--) {
+      const x = convert[i];
+      const have = await env.DB.prepare('SELECT 1 FROM entries WHERE platform=? AND email_norm=? LIMIT 1').bind(x.plat, normEmail(x.email)).first();
+      if (have) convert.splice(i, 1);
+    }
+    if (!apply) {
+      const by = {};
+      for (const c of todo) by[nonIg[c.campaign_id]] = (by[nonIg[c.campaign_id]] || 0) + 1;
+      return json({
+        dry_run: true, conversations_to_move: todo.length, by_platform: by,
+        unlinked_today: todo.filter(c => !c.eid).length,
+        convert_in_place: convert.length,
+        no_email_cannot_move: noEmail.length,
+      });
+    }
+
+    // 1. Convert the phantom Instagram rows (cheap, all at once).
+    const stmts = convert.map(x => env.DB.prepare(
+      "UPDATE entries SET platform=?, handle_norm=?, social_url='' WHERE id=? AND platform='instagram'")
+      .bind(x.plat, emailKey(x.plat, x.email) || (x.plat + ':entry:' + x.eid), x.eid));
+    for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
+    // 2. Re-link conversations in pages — the sync's own platform-aware
+    //    linker does the rest, creating leads where none exist. `todo` is
+    //    recomputed every call and shrinks as rows are fixed, so each call
+    //    takes the FIRST page — stepping by an offset would skip half of them.
+    const page = todo.slice(0, 60);
+    if (page.length) await linkConversations(env, page.map(c => c.key));
+    await bumpVersion(env);
+    console.log('platform migration page', page.length, 'remaining', todo.length - page.length);
+    return json({ done: todo.length <= 60, processed: page.length, remaining: Math.max(0, todo.length - page.length),
+                  converted: convert.length, no_email_cannot_move: noEmail.length });
+  }
+
   if (path === '/api/lead/detail' && method === 'GET') {
     await requireUser(env, request);
     const entryId = parseInt(url.searchParams.get('entry_id'), 10) || 0;
@@ -2256,10 +2513,15 @@ async function handleApi(request, env, url) {
     const h = entry.handle_norm || '';
     const [convRes, campRes, vidRes] = await env.DB.batch([
       env.DB.prepare(`SELECT key, campaign_id, email, status, last_msg_at, lead_reply_count, last_lead_msg_at FROM conversations WHERE (? != '' AND email=?) OR (? != '' AND handle_norm=?)`).bind(em, em, h, h),
-      env.DB.prepare('SELECT id, name FROM campaigns'),
+      env.DB.prepare('SELECT id, name, platform FROM campaigns'),
       env.DB.prepare("SELECT * FROM videos WHERE entry_id=? ORDER BY (date_posted!='') DESC, date_posted DESC, id DESC").bind(entry.id),
     ]);
     const names = Object.fromEntries(campRes.results.map(r => [r.id, r.name]));
+    const campPlat = Object.fromEntries(campRes.results.map(r => [r.id, r.platform || IG]));
+    // Everyone else with this email, on any platform. Duplicates are allowed;
+    // the point is that nobody works one without seeing the others.
+    const { results: sibs } = em ? await env.DB.prepare(
+      'SELECT * FROM entries WHERE email_norm=? AND id != ? ORDER BY platform, id').bind(em, entry.id).all() : { results: [] };
     // Thread = every email for the entry's own address PLUS every address seen on
     // its matched conversations (covers handle-only leads whose email lives on the
     // linked conversation, not the entry).
@@ -2289,8 +2551,10 @@ async function handleApi(request, env, url) {
       // a conversation row gets created at all. Surfacing it lets the popup say
       // "they replied, but we do not hold the message" instead of silently
       // showing a one-sided thread that looks like a bug.
+      other_platforms: sibs.map(r => entryDict(r, '')),
       conversations: convRes.results.map(c => ({
         campaign_id: c.campaign_id, campaign_name: names[c.campaign_id] || '', status: c.status,
+        platform: campPlat[c.campaign_id] || IG,
         email: c.email || '', lead_reply_count: c.lead_reply_count || 0, last_lead_msg_at: c.last_lead_msg_at || '',
       })),
     });
@@ -2723,19 +2987,35 @@ function sigFromConvRows(rows, query) {
     last_reply_at: rows.map(r => r.last_lead_msg_at || '').filter(Boolean).sort().pop() || '',
   };
 }
-async function localCrm(env, email, handle) {
-  const em = normEmail(email), h = normHandle(handle || '');
+/* `platform` given: only conversations from that platform's campaigns count.
+   That is what a lead's stage and CRM columns are built from — a YouTube reply
+   must never move the same person's Instagram row. Without it (the add-lead
+   preview), every platform counts, so nobody re-pitches someone we already
+   talked to elsewhere. */
+async function localCrm(env, email, handle, platform = null) {
+  const em = normEmail(email);
+  // Instagram handles are stored bare on conversations; other platforms have none.
+  const h = platform && platform !== IG ? '' : normHandle(handle || '');
   if (!em && !h) return { results: [], signal: null, error: '' };
-  const { results: rows } = await env.DB.prepare(
-    `SELECT ${CONV_SIG_COLS} FROM conversations WHERE (? != '' AND email = ?) OR (? != '' AND handle_norm = ?)`)
-    .bind(em, em, h, h).all();
+  const { results: rows } = platform
+    ? await env.DB.prepare(
+        `SELECT ${CONV_SIG_COLS.split(', ').map(k => 'v.' + k).join(', ')} FROM conversations v LEFT JOIN campaigns c ON c.id = v.campaign_id
+          WHERE ((? != '' AND v.email = ?) OR (? != '' AND v.handle_norm = ?)) AND COALESCE(NULLIF(c.platform, ''), 'instagram') = ?`)
+        .bind(em, em, h, h, platform).all()
+    : await env.DB.prepare(
+        `SELECT ${CONV_SIG_COLS} FROM conversations WHERE (? != '' AND email = ?) OR (? != '' AND handle_norm = ?)`)
+        .bind(em, em, h, h).all();
   let signal = sigFromConvRows(rows, em || h);
   // No conversation (= no reply). Best-effort "contacted, never replied": did we
   // ever send this address an email? (Send coverage in `emails` is partial, so
   // this can under-report, but a real reply would have created a conversation.)
   if (!signal && em) {
-    const r = await env.DB.prepare(
-      "SELECT COUNT(*) n, MAX(timestamp_email) last_at FROM emails WHERE lead_email=? AND ue_type IN (1,3)").bind(em).first();
+    const r = platform
+      ? await env.DB.prepare(
+          `SELECT COUNT(*) n, MAX(m.timestamp_email) last_at FROM emails m LEFT JOIN campaigns c ON c.id = m.campaign_id
+            WHERE m.lead_email=? AND m.ue_type IN (1,3) AND COALESCE(NULLIF(c.platform, ''), 'instagram') = ?`).bind(em, platform).first()
+      : await env.DB.prepare(
+          "SELECT COUNT(*) n, MAX(timestamp_email) last_at FROM emails WHERE lead_email=? AND ue_type IN (1,3)").bind(em).first();
     if (r && r.n > 0) {
       signal = { type: 'local', query: em, known: true, contacted: true, replied: false,
         status: '', poc: '', label: '', first_name: '', campaigns: [], last_contact_at: r.last_at || '', last_reply_at: '' };
@@ -2748,7 +3028,7 @@ async function localCrm(env, email, handle) {
 // (entries + master) and CRM check as the single-add path, but batches the
 // lookups so a 500-row paste is a handful of queries, not 1500. Returns a
 // per-row report plus a summary so the teammate sees exactly what happened.
-async function bulkAdd(env, user, rawRows) {
+async function bulkAdd(env, user, rawRows, platform = IG) {
   if (!rawRows.length) throw new ApiError(400, 'No rows to add');
   if (rawRows.length > 500) throw new ApiError(400, 'Max 500 rows per bulk add');
 
@@ -2758,7 +3038,13 @@ async function bulkAdd(env, user, rawRows) {
     const firstName = (typeof r === 'object' && r) ? (r.first_name || r.name || '') : '';
     const notes = (typeof r === 'object' && r) ? (r.notes || '') : '';
     const category = (typeof r === 'object' && r) ? (r.category || '') : '';
-    return { handle: normHandle(social), raw: String(social || '').trim(),
+    const o = (typeof r === 'object' && r) ? r : {};
+    const hk = handleKey(platform, social, normHandle);
+    return { handle: hk ? hk.key : '', url: hk ? hk.url : '', raw: String(social || '').trim(),
+             pDisplay: String(o.p_display || o.channel || o.community || '').trim(),
+             pAudience: parseCount(o.p_audience != null ? o.p_audience : (o.subscribers || o.followers || o.members)),
+             pLast: String(o.p_last_activity || o.last_upload || '').trim(),
+             pPrice: String(o.p_price || o.price || '').trim(),
              email: normEmail(emailRaw), emailRaw: String(emailRaw || '').trim(),
              firstName: String(firstName || '').trim(), notes: String(notes || '').trim(),
              category: String(category || '').trim() };
@@ -2783,12 +3069,13 @@ async function bulkAdd(env, user, rawRows) {
   const byEmail = {}, byHandle = {}, gE = {}, gH = {};
   for (let i = 0; i < emails.length; i += 90) { // D1 caps bound params near 100
     const chunk = emails.slice(i, i + 90);
-    const { results } = await env.DB.prepare(`SELECT email, handle_norm, ${CONV_SIG_COLS} FROM conversations WHERE email IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+    // Only this platform's campaigns: a YouTube reply must not put a new Instagram lead in Responses.
+    const { results } = await env.DB.prepare(`SELECT v.email, v.handle_norm, ${CONV_SIG_COLS.split(', ').map(k => 'v.' + k).join(', ')} FROM conversations v LEFT JOIN campaigns c ON c.id = v.campaign_id WHERE v.email IN (${chunk.map(() => '?').join(',')}) AND COALESCE(NULLIF(c.platform, ''), 'instagram') = ?`).bind(...chunk, platform).all();
     for (const r of results) if (r.email) (gE[r.email] = gE[r.email] || []).push(r);
   }
   for (let i = 0; i < handles.length; i += 90) { // D1 caps bound params near 100
     const chunk = handles.slice(i, i + 90);
-    const { results } = await env.DB.prepare(`SELECT email, handle_norm, ${CONV_SIG_COLS} FROM conversations WHERE handle_norm IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+    const { results } = await env.DB.prepare(`SELECT v.email, v.handle_norm, ${CONV_SIG_COLS.split(', ').map(k => 'v.' + k).join(', ')} FROM conversations v LEFT JOIN campaigns c ON c.id = v.campaign_id WHERE v.handle_norm IN (${chunk.map(() => '?').join(',')}) AND COALESCE(NULLIF(c.platform, ''), 'instagram') = ?`).bind(...chunk, platform).all();
     for (const r of results) if (r.handle_norm) (gH[r.handle_norm] = gH[r.handle_norm] || []).push(r);
   }
   for (const em of emails) { const s = sigFromConvRows(gE[em], em); if (s) byEmail[em] = s; }
@@ -2833,12 +3120,14 @@ async function bulkAdd(env, user, rawRows) {
       `INSERT INTO entries
         (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, lead_owner, lead_manager, created_by, created_at, source, in_master, stage, position,
          crm_known, crm_contacted, crm_replied, crm_status, crm_poc, crm_campaigns,
-         crm_last_contact_at, crm_last_reply_at, crm_checked_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?)
+         crm_last_contact_at, crm_last_reply_at, crm_checked_at,
+         platform, p_display, p_audience, p_last_activity, p_price)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(handle_norm) DO NOTHING`)
-      .bind(r.handle, r.raw, canonicalUrl(r.handle), r.emailRaw, r.email, r.firstName, r.notes, r.category, ownerName(user), managerOf(ownerName(user)), user.username, created, initStage, initPos,
+      .bind(r.handle, r.raw, r.url, r.emailRaw, r.email, r.firstName, r.notes, r.category, ownerName(user), managerOf(ownerName(user)), user.username, created, initStage, initPos,
             snap.crm_known, snap.crm_contacted, snap.crm_replied, snap.crm_status, snap.crm_poc,
-            snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at);
+            snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at,
+            platform, r.pDisplay, r.pAudience, r.pLast, r.pPrice);
   });
 
   const addedHandles = [];
@@ -2867,7 +3156,7 @@ async function bulkAdd(env, user, rawRows) {
      because Instagram was slow — and the count is returned so the UI can say
      what is left rather than leaving it invisible. */
   let enriched = 0, enrichPending = 0;
-  if (addedHandles.length) {
+  if (addedHandles.length && platform === IG) {
     const take = addedHandles.slice(0, IG_STEP_LEADS);
     enrichPending = addedHandles.length - take.length;
     try {
@@ -2911,14 +3200,15 @@ async function editEntry(env, user, body) {
 
   if ('social_url' in body || 'handle' in body) {
     const raw = body.social_url != null ? body.social_url : body.handle;
-    const h = normHandle(raw);
-    if (!h) throw new ApiError(400, 'Enter a valid Instagram profile link or handle');
+    const hk = handleKey(row.platform || IG, raw, normHandle);
+    if (!hk) throw new ApiError(400, 'Enter a valid profile link or handle for this platform');
+    const h = hk.key;
     if (h !== row.handle_norm) {
       const clash = await env.DB.prepare('SELECT lead_owner FROM entries WHERE handle_norm=? AND id!=?').bind(h, id).first();
       if (clash) throw new ApiError(409, `@${h} is already in the platform (added by ${clash.lead_owner || 'someone'})`);
       // in_master stays tied to the row's source; renaming the handle doesn't change it.
       sets.push('handle_norm=?', 'handle_raw=?', 'social_url=?');
-      args.push(h, String(raw || '').trim(), canonicalUrl(h));
+      args.push(h, String(raw || '').trim(), hk.url);
       newHandle = h; identityChanged = true;
     }
   }
@@ -2930,6 +3220,10 @@ async function editEntry(env, user, body) {
     newEmailNorm = en;
   }
   if ('first_name' in body) { sets.push('first_name=?'); args.push(String(body.first_name || '').trim()); }
+  if ('p_display' in body) { sets.push('p_display=?'); args.push(String(body.p_display || '').trim()); }
+  if ('p_audience' in body) { sets.push('p_audience=?'); args.push(parseCount(body.p_audience)); }
+  if ('p_last_activity' in body) { sets.push('p_last_activity=?'); args.push(String(body.p_last_activity || '').trim()); }
+  if ('p_price' in body) { sets.push('p_price=?'); args.push(String(body.p_price || '').trim()); }
   if ('notes' in body) { sets.push('notes=?'); args.push(String(body.notes || '').trim()); }
   if ('category' in body) { sets.push('category=?'); args.push(String(body.category || '').trim()); }
   // A hand-set country is marked 'manual' so a future re-derive leaves it be.
@@ -2982,7 +3276,7 @@ async function editEntry(env, user, body) {
   if (identityChanged) {
     // crm_deal intentionally left untouched — deal/rate data is owned by the sync
     // (from conversations); the local signal has none and would blank it.
-    const snap = crmSnapshot((await localCrm(env, newEmailNorm, newHandle)).signal);
+    const snap = crmSnapshot((await localCrm(env, newEmailNorm, newHandle, row.platform || IG)).signal);
     sets.push('crm_known=?', 'crm_contacted=?', 'crm_replied=?', 'crm_status=?', 'crm_poc=?',
       'crm_campaigns=?', 'crm_last_contact_at=?', 'crm_last_reply_at=?', 'crm_checked_at=?', 'crm_label=?');
     args.push(snap.crm_known, snap.crm_contacted, snap.crm_replied, snap.crm_status, snap.crm_poc,
@@ -3004,7 +3298,10 @@ async function editEntry(env, user, body) {
 }
 
 async function checkLead(env, body) {
-  const handle = normHandle(body.social_url || body.handle || '');
+  // A preview, so an odd platform value just falls back rather than erroring.
+  const platform = String(body.platform || IG).trim().toLowerCase() || IG;
+  const hk = handleKey(platform, body.social_url || body.handle || '', normHandle);
+  const handle = hk ? hk.key : '';
   const email = normEmail(body.email);
   if (!handle && !email) return { handle: '', email, dup: null, in_master: false, crm: null };
 
@@ -3019,12 +3316,13 @@ async function checkLead(env, body) {
       inMaster = existing.source === 'master';
     }
   }
-  // Same email already in our DB (under any handle) — an independent "already a
-  // lead" signal. Without this, a known email under a new/blank handle looked new.
+  /* Same email already a lead ON THIS PLATFORM — that is a real duplicate and
+     blocks the save. The same email on another platform is allowed, and the
+     add form says so separately ("Also on"), so it must not show red here. */
   let emailDup = null;
   if (email) {
     const byEmail = await env.DB.prepare(
-      'SELECT id, handle_norm, lead_owner, created_by, created_at, email, source FROM entries WHERE email_norm=? ORDER BY id LIMIT 1').bind(email).first();
+      'SELECT id, handle_norm, lead_owner, created_by, created_at, email, source FROM entries WHERE email_norm=? AND platform=? ORDER BY id LIMIT 1').bind(email, platform).first();
     if (byEmail && (!dup || byEmail.id !== dup.id)) {
       emailDup = { id: byEmail.id, handle: byEmail.handle_norm || '', owner: byEmail.lead_owner,
                    created_by: byEmail.created_by, created_at: byEmail.created_at,

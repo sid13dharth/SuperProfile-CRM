@@ -1,3 +1,5 @@
+import { IG, emailKey, detectCampaignPlatform } from './platforms.js';
+
 /**
  * MERGE Phase 2 — Instantly sync engine, ported from the CRM worker.
  *
@@ -192,10 +194,15 @@ async function runSync(env, ws, apiKey, maxPages = 6) {
     for (let page = 0; page < 25; page++) {
       const data = await instantlyGet(env, '/campaigns', { limit: 100, starting_after: startingAfter }, apiKey);
       const items = data.items || [];
-      for (const c of items) stmts.push(env.DB.prepare(
-        'INSERT INTO campaigns (id, name, status, ws, created) VALUES (?,?,?,?,?) '
-        + 'ON CONFLICT(id) DO UPDATE SET name=excluded.name, status=excluded.status, ws=excluded.ws, created=excluded.created')
-        .bind(c.id || '', c.name || '', String(c.status ?? ''), ws, c.timestamp_created || ''));
+      for (const c of items) {
+        const [plat, sure] = detectCampaignPlatform(c.name);
+        stmts.push(env.DB.prepare(
+          'INSERT INTO campaigns (id, name, status, ws, created, platform, platform_src) VALUES (?,?,?,?,?,?,?) '
+          + 'ON CONFLICT(id) DO UPDATE SET name=excluded.name, status=excluded.status, ws=excluded.ws, created=excluded.created, '
+          + "platform = CASE WHEN campaigns.platform = '' THEN excluded.platform ELSE campaigns.platform END, "
+          + "platform_src = CASE WHEN campaigns.platform = '' THEN excluded.platform_src ELSE campaigns.platform_src END")
+          .bind(c.id || '', c.name || '', String(c.status ?? ''), ws, c.timestamp_created || '', plat, sure ? 'name' : 'default'));
+      }
       if (!data.next_starting_after) break;
       startingAfter = data.next_starting_after;
     }
@@ -544,31 +551,62 @@ function furthest(a, b) { return STATUS_RANK.indexOf(a) <= STATUS_RANK.indexOf(b
 async function linkConversations(env, keys) {
   keys = [...new Set((keys || []).filter(Boolean))];
   if (!keys.length) return;
+  /* Which platform each campaign is for. A reply attaches to the lead on THAT
+     platform: a YouTube reply moves the YouTube lead and never the Instagram
+     one, even when both share an email. Unknown campaigns count as Instagram,
+     which is what every lead was before platforms existed. */
+  const { results: cp } = await env.DB.prepare('SELECT id, platform FROM campaigns').all();
+  const campPlat = Object.fromEntries(cp.map(r => [r.id, r.platform || IG]));
   const affectedEntries = new Set();
   for (let i = 0; i < keys.length; i += 40) {
     const chunk = keys.slice(i, i + 40);
     const ph = chunk.map(() => '?').join(',');
     const { results: convs } = await env.DB.prepare(
-      `SELECT key, email, social_url, handle_norm, entry_id, first_name, lead_owner FROM conversations WHERE key IN (${ph})`).bind(...chunk).all();
+      `SELECT key, campaign_id, email, social_url, handle_norm, entry_id, first_name, lead_owner, first_reply_at, last_msg_at FROM conversations WHERE key IN (${ph})`).bind(...chunk).all();
     for (const c of convs) {
-      const handle = c.handle_norm || normHandle(c.social_url);
+      const plat = campPlat[c.campaign_id] || IG;
       const emailNorm = normEmail(c.email);
-      // Find the person: handle first (unique), then email.
-      let entry = null;
-      if (handle) entry = await env.DB.prepare('SELECT id FROM entries WHERE handle_norm=?').bind(handle).first();
-      if (!entry && emailNorm) entry = await env.DB.prepare("SELECT id FROM entries WHERE email_norm=? ORDER BY id LIMIT 1").bind(emailNorm).first();
-      let entryId = entry ? entry.id : 0;
-      if (!entryId && handle) {
-        // Auto-create the person from the conversation (closes the coverage gap).
-        const res = await env.DB.prepare(
-          `INSERT INTO entries (handle_norm, handle_raw, social_url, email, email_norm, first_name, lead_owner, created_by, created_at, source, in_master, stage, position, position_source, crm_campaigns)
-           VALUES (?,?,?,?,?,?,?,'', ?, 'crm', 0, 'Responses', '', 'auto', '[]') ON CONFLICT(handle_norm) DO NOTHING`)
-          .bind(handle, c.social_url || canonicalUrl(handle), canonicalUrl(handle), c.email || '', emailNorm, c.first_name || '', c.lead_owner || '', nowIso()).run();
-        const got = await env.DB.prepare('SELECT id FROM entries WHERE handle_norm=?').bind(handle).first();
-        entryId = got ? got.id : 0;
+      let entryId = 0;
+      if (plat === IG) {
+        const handle = c.handle_norm || normHandle(c.social_url);
+        /* Handle first — Instagram handles are stored bare, so this can only
+           ever match an Instagram lead — then email, within Instagram only.
+           Before platforms the email lookup matched any lead; now it must not
+           attach an Instagram reply to the same person's YouTube row. */
+        let entry = null;
+        if (handle) entry = await env.DB.prepare('SELECT id FROM entries WHERE handle_norm=?').bind(handle).first();
+        if (!entry && emailNorm) entry = await env.DB.prepare("SELECT id FROM entries WHERE email_norm=? AND platform='instagram' ORDER BY id LIMIT 1").bind(emailNorm).first();
+        entryId = entry ? entry.id : 0;
+        if (!entryId && handle) {
+          // Auto-create the person from the conversation (closes the coverage gap).
+          await env.DB.prepare(
+            `INSERT INTO entries (handle_norm, handle_raw, social_url, email, email_norm, first_name, lead_owner, created_by, created_at, source, in_master, stage, position, position_source, crm_campaigns)
+             VALUES (?,?,?,?,?,?,?,'', ?, 'crm', 0, 'Responses', '', 'auto', '[]') ON CONFLICT(handle_norm) DO NOTHING`)
+            .bind(handle, c.social_url || canonicalUrl(handle), canonicalUrl(handle), c.email || '', emailNorm, c.first_name || '', c.lead_owner || '', nowIso()).run();
+          const got = await env.DB.prepare('SELECT id FROM entries WHERE handle_norm=?').bind(handle).first();
+          entryId = got ? got.id : 0;
+        }
+        if (entryId && handle && c.handle_norm !== handle) await env.DB.prepare('UPDATE conversations SET handle_norm=? WHERE key=?').bind(handle, c.key).run();
+      } else if (emailNorm) {
+        /* Any other platform: the person on that platform, matched by email.
+           Before this, a YouTube reply was looked up by Instagram handle, found
+           nothing, and was never attached to anyone — 184 conversations were
+           invisible in the CRM that way. */
+        const entry = await env.DB.prepare('SELECT id FROM entries WHERE platform=? AND email_norm=? ORDER BY id LIMIT 1').bind(plat, emailNorm).first();
+        entryId = entry ? entry.id : 0;
+        if (!entryId) {
+          // Keyed by email until someone fills in the real profile link, and dated
+          // by the reply that created it rather than by when the sync ran.
+          const key = emailKey(plat, emailNorm);
+          await env.DB.prepare(
+            `INSERT INTO entries (handle_norm, handle_raw, social_url, email, email_norm, first_name, lead_owner, created_by, created_at, source, in_master, stage, position, position_source, crm_campaigns, platform)
+             VALUES (?,?,'',?,?,?,?,'',?,'crm',0,'Responses','','auto','[]',?) ON CONFLICT(handle_norm) DO NOTHING`)
+            .bind(key, c.social_url || '', c.email || '', emailNorm, c.first_name || '', c.lead_owner || '', c.first_reply_at || c.last_msg_at || nowIso(), plat).run();
+          const got = await env.DB.prepare('SELECT id FROM entries WHERE handle_norm=?').bind(key).first();
+          entryId = got ? got.id : 0;
+        }
       }
       if (entryId && entryId !== c.entry_id) await env.DB.prepare('UPDATE conversations SET entry_id=? WHERE key=?').bind(entryId, c.key).run();
-      if (entryId && (c.handle_norm !== handle) && handle) await env.DB.prepare('UPDATE conversations SET handle_norm=? WHERE key=?').bind(handle, c.key).run();
       if (entryId) affectedEntries.add(entryId);
     }
   }

@@ -32,6 +32,7 @@
   <button class="rb-item" id="funnel-btn" title="Funnel analytics — where leads leak">Funnel</button>
   <button class="rb-item" id="classify-btn" title="Add or remove statuses, labels and categories">Manage</button>
   <button class="rb-item" id="pipe-btn" title="Manage the pipeline stages &amp; labels">Pipeline</button>
+  <button class="rb-item" id="campplat-btn" title="Which platform each Instantly campaign is for">Campaigns</button>
   <button class="rb-item" id="activity-btn" title="Per-member daily activity">Activity</button>
   <button class="rb-item" id="ig-btn" title="Fetch followers / last post / avg reel views from Instagram">IG data</button>
   <button class="rb-item" id="refresh-crm-btn" title="Re-check every lead against the CRM">Refresh CRM</button>
@@ -72,6 +73,8 @@
   <section class="list-panel">
     <!-- Tabs and the search box share one line; the tab bar keeps its own
          element so renderTabs() still owns its HTML. -->
+    <!-- Platforms sit above the stage tabs: pick a platform, then a stage. -->
+    <div class="plat-bar" id="plat-bar" role="tablist" aria-label="Platform"></div>
     <div class="tab-row">
       <div class="tab-bar" id="tab-bar"></div>
       <div class="tab-tools" id="tab-tools">
@@ -93,6 +96,7 @@
         <select id="link-filter" title="Filter by the platform in their Instagram bio link"><option value="">Any link in bio</option></select>
         <input id="bio-search" class="bio-box" placeholder="Bio search: &quot;ugc coach&quot; -freelance" title="Search Instagram bios. Two words means both. Quotes for an exact phrase, minus to exclude, * for a stem, OR for either.">
         <button class="hbtn bio-help" id="bio-help" title="Search syntax" type="button">?</button>
+        <button class="hbtn" id="dup-only" aria-pressed="false" title="Only leads whose email is also a lead on another platform">On other platforms only</button>
         <button class="hbtn clear-btn" id="clear-filters" title="Reset every filter, the search box and the date range">Clear all filters</button>
         <button class="hbtn" id="export-csv" title="Download every lead matching the current filters">⬇ Export CSV</button>
       </div>
@@ -130,12 +134,19 @@
     <label class="fld">First name <span class="opt">(optional)</span>
       <input id="f-firstname" placeholder="e.g. Angelika" autocomplete="off">
     </label>
-    <label class="fld">Instagram profile link or handle
+    <label class="fld">Platform
+      <select id="f-platform"></select>
+    </label>
+    <label class="fld"><span id="f-social-label">Instagram profile link or handle</span>
       <input id="f-social" placeholder="instagram.com/theirhandle  ·  @theirhandle" autocomplete="off">
     </label>
+    <!-- Filled per platform: subscribers, members, price… -->
+    <div id="f-pfields"></div>
     <label class="fld">Lead email <span class="opt">(optional)</span>
       <input id="f-email" type="email" placeholder="lead@example.com" autocomplete="off">
     </label>
+    <!-- Same email already a lead elsewhere: say so before they save. -->
+    <div id="f-xplat" class="add-msg"></div>
     <label class="fld">Category <span class="opt">(optional)</span>
       <div class="cat-row">
         <select id="f-category"><option value="">— none —</option></select>
