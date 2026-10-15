@@ -2095,6 +2095,42 @@ async function handleApi(request, env, url) {
 
   /* — videos (linked to a lead; many per lead) — */
 
+  /* Partners: one row per creator who has posted at least one video for us
+     (the same rule as the ★ Partner tag), with their lead details and every
+     video. Totals are left to the page — budgets are free text. */
+  if (path === '/api/partners' && method === 'GET') {
+    await requireUser(env, request);
+    const { results: vids } = await env.DB.prepare(
+      `SELECT id, entry_id, handle, lead_name, url, date_posted, views, likes, comments, budget, referral, saas, notes, country, post_status, created_at
+         FROM videos ORDER BY (date_posted != '') DESC, date_posted DESC, id DESC`).all();
+    const ids = [...new Set(vids.map(v => v.entry_id).filter(Boolean))];
+    const ent = {};
+    for (let i = 0; i < ids.length; i += 90) {
+      const chunk = ids.slice(i, i + 90);
+      const { results } = await env.DB.prepare(
+        `SELECT id, handle_norm, first_name, email, platform, country, lead_owner, lead_manager, social_url, stage
+           FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+      for (const e of results) ent[e.id] = e;
+    }
+    const by = new Map();
+    for (const v of vids) {
+      // A video not linked to a lead is still a partner — grouped by its handle.
+      const k = v.entry_id ? 'e' + v.entry_id : 'h' + String(v.handle || '').toLowerCase();
+      if (!by.has(k)) {
+        const e = ent[v.entry_id] || {};
+        by.set(k, {
+          entry_id: v.entry_id || 0, handle: v.handle || displayId(e.platform || IG, e.handle_norm || ''),
+          name: e.first_name || v.lead_name || '', email: e.email || '', platform: e.platform || IG,
+          country: e.country || v.country || '', lead_owner: e.lead_owner || '', lead_manager: e.lead_manager || '',
+          social_url: e.social_url || '', stage: e.stage || '', videos: [],
+        });
+      }
+      by.get(k).videos.push({ id: v.id, url: v.url, date_posted: v.date_posted, views: v.views, likes: v.likes,
+        comments: v.comments, budget: v.budget, referral: v.referral, saas: v.saas, notes: v.notes, post_status: v.post_status });
+    }
+    return json({ partners: [...by.values()] });
+  }
+
   if (path === '/api/videos' && method === 'GET') {
     await requireUser(env, request);
     const eid = parseInt(url.searchParams.get('entry_id'), 10) || 0;

@@ -203,5 +203,10 @@ table.grid thead th { background: var(--bg2) !important; color: var(--muted) !im
 table.grid tbody tr.odd { background: var(--stripe) !important; }
 table.grid tbody tr:hover { background: var(--hover) !important; }
 td.lnk a { color: var(--accent) !important; }
+/* Partners: each video as a small numbered link. */
+td.plinks a { display: inline-block; min-width: 20px; padding: 0 5px; margin-right: 3px; border-radius: 5px; text-align: center;
+  background: var(--seg-bg); color: var(--accent) !important; text-decoration: none; font-variant-numeric: tabular-nums; }
+td.plinks a:hover { background: var(--accent); color: #fff !important; }
+td.plinks { max-width: 360px !important; white-space: normal !important; }
 .pager { background: var(--bg2) !important; border-top: .5px solid var(--border) !important; }
 .cap-note { background: var(--bg2) !important; }

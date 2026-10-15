@@ -644,7 +644,7 @@ function filterParams() {
   // Closed sub-node / position).
   if (state.tab === 'closed') { const dv = $('delivery-filter') ? $('delivery-filter').value : ''; if (dv) p.set('position', dv); }
   if (state.tab === 'failed') { const rv = $('reason-filter') ? $('reason-filter').value : ''; if (rv) p.set('position', rv); }
-  if (state.tab && state.tab !== 'all' && state.tab !== 'videos') p.set('tab', state.tab);
+  if (state.tab && state.tab !== 'all' && state.tab !== 'videos' && state.tab !== 'partners') p.set('tab', state.tab);
   const bio = $('bio-search') ? $('bio-search').value.trim() : '';
   if (bio) p.set('bio', bio);
   if ($('active30') && $('active30').classList.contains('active')) p.set('active30', '1');
@@ -657,6 +657,7 @@ function filterParams() {
 
 async function loadEntries() {
   if (state.tab === 'videos') return loadVideos();
+  if (state.tab === 'partners') return loadPartners();
   let data;
   // limit=100000 pulls the FULL filtered set into the grid (the server caps at
   // 100k; the table has ~22k rows). The user opted to load everything on-screen.
@@ -1193,7 +1194,7 @@ function wirePager() {
   // ←/→ page through the grid, but never while typing or editing a cell.
   document.addEventListener('keydown', ev => {
     if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
-    if (state.tab === 'videos' || $('pager').style.display === 'none') return;
+    if (state.tab === 'videos' || state.tab === 'partners' || $('pager').style.display === 'none') return;
     const t = ev.target;
     if (t instanceof Element && (t.matches('input, select, textarea') || t.isContentEditable)) return;
     if (document.querySelector('.modal-bg.open')) return;
@@ -1578,7 +1579,7 @@ function switchView(view, deepLink) {
 const TABS = [
   { k: 'leads', h: 'Leads' }, { k: 'responses', h: 'Responses' },
   { k: 'closed', h: 'Closed' }, { k: 'failed', h: 'Failed' },
-  { k: 'all', h: 'All Leads' }, { k: 'videos', h: 'Videos' },
+  { k: 'all', h: 'All Leads' }, { k: 'videos', h: 'Videos' }, { k: 'partners', h: 'Partners' },
 ];
 /* ── platforms ─────────────────────────────────────────── */
 const BUILTIN_PLATS = ['instagram', 'youtube', 'x', 'skool'];
@@ -1630,7 +1631,7 @@ function switchPlatform(k) {
   try { localStorage.setItem('lg_platform', k); } catch (e) {}
   state.page = 1; state.sort = { key: '', dir: 'desc' };
   renderPlatBar(); applyPlatformUi();
-  if (state.tab !== 'videos') loadEntries();     // Videos are not per platform
+  if (state.tab !== 'videos' && state.tab !== 'partners') loadEntries();     // Videos and Partners are not per platform
 }
 
 /* Instagram-only controls (bio search, link-in-bio, active-in-30-days, IG
@@ -1859,7 +1860,8 @@ async function runDeepLink() {
 function switchTab(k) {
   state.tab = k;
   renderTabs();
-  const isVideos = k === 'videos';
+  // Partners shares the Videos search box; neither uses the lead filters.
+  const isVideos = k === 'videos' || k === 'partners';
   $('lead-controls').style.display = isVideos ? 'none' : '';
   // Search and Add lead live on the tab line now, but they are still lead
   // controls — Videos has its own search and its own add button.
@@ -1867,6 +1869,8 @@ function switchTab(k) {
   // It left #lead-controls, so it no longer hides with that group.
   $('open-add-btn').style.display = isVideos ? 'none' : '';
   $('video-controls').style.display = isVideos ? '' : 'none';
+  for (const id of ['import-video-btn', 'add-video-btn']) { const b = $(id); if (b) b.style.display = k === 'partners' ? 'none' : ''; }
+  $('video-search').placeholder = k === 'partners' ? 'Search partners (name, handle, email, country…)' : 'Search videos (lead, country, type…)';
   const db = document.querySelector('.date-bar'); if (db) db.style.display = isVideos ? 'none' : '';
   const t = TABS.find(x => x.k === k);
   $('list-title').innerHTML = esc(t.h) + ' <span class="count" id="entry-count"></span>';
@@ -1947,13 +1951,13 @@ async function saveFail() {
    'Type' is the Instagram format from the export; 'Video type' below is our
    own categorisation — different questions, so both are shown. */
 const VIDEO_COLS = [
+  { f: 'date_posted', h: 'Date', e: 'date', cls: 'dt' },
   { f: 'handle', h: 'Username', leadlink: true, cls: 'uname' },
   { f: 'lead_name', h: 'First name', e: 'text' },
   { f: 'url', h: 'Video URL', e: 'text', cls: 'lnk' },
   { f: 'views', h: 'Views', e: 'text', cls: 'ig' },
   { f: 'comments', h: 'Comments', e: 'text', cls: 'ig' },
   { f: 'likes', h: 'Likes', e: 'text', cls: 'ig' },
-  { f: 'date_posted', h: 'Date', e: 'date', cls: 'dt' },
   { f: 'post_type', h: 'Type', e: 'text' },
   { f: 'post_status', h: 'Status', e: 'text' },
   { f: 'country', h: 'Country', e: 'country' },
@@ -1964,6 +1968,65 @@ const VIDEO_COLS = [
   { f: 'saas', h: 'SAAS', e: 'text' },
   { f: 'notes', h: 'Notes', e: 'notes', cls: 'notes' },
 ];
+/* ── Partners: one row per creator who has posted a video for us ──
+   (the same rule as the ★ Partner tag). Totals are worked out here because
+   the export's counts and our budgets are free text. */
+async function loadPartners() {
+  let d;
+  try { d = await api('/api/partners'); } catch (e) { $('list').innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; return; }
+  state.partners = d.partners || [];
+  renderPartners();
+}
+const pNum = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : 0; };
+// "$250", "₹4k", "300 USD" → a number; anything unreadable counts as 0.
+const pMoney = v => { const t = String(v || '').toLowerCase(); const n = pNum(t); return /\dk\b/.test(t) ? n * 1000 : n; };
+function partnerRow(p) {
+  const vids = p.videos;
+  const dated = vids.map(v => v.date_posted).filter(Boolean).sort();
+  const sum = f => vids.reduce((a, v) => a + pNum(v[f]), 0);
+  const counted = vids.filter(v => v.views != null && v.views !== '');
+  const views = sum('views');
+  const budget = vids.reduce((a, v) => a + pMoney(v.budget), 0);
+  const uniq = f => [...new Set(vids.map(v => String(v[f] || '').trim()).filter(Boolean))].join(', ');
+  const h = String(p.handle || '').replace(/^@/, '');
+  const handle = !h ? '' : p.social_url
+    ? '<a href="' + esc(p.social_url) + '" target="_blank" rel="noopener">@' + esc(h) + '</a>' : '@' + esc(h);
+  // Every video, numbered in date order (newest first, as the Videos tab lists them).
+  const links = vids.filter(v => v.url).map((v, i) =>
+    '<a href="' + esc(v.url) + '" target="_blank" rel="noopener" title="' + esc(v.url) + (v.date_posted ? ' · ' + esc(fmtDMY(v.date_posted)) : '') + '">' + (i + 1) + '</a>').join(' ');
+  const td = (v, cls) => '<td class="' + (cls || '') + '">' + (v === '' || v == null ? ph : v) + '</td>';
+  const n = x => counted.length ? esc(fmtCount(x)) : '';
+  return '<tr>'
+    + td(dated.length ? esc(fmtDMY(dated[dated.length - 1])) : '', 'dt')
+    + td(handle, 'uname lnk') + td(esc(p.name)) + td(esc(p.email))
+    + td('<span class="pn" style="--pc:' + platVar(p.platform) + '">' + esc(platName(p.platform)) + '</span>')
+    + td(esc(p.country)) + td(esc(p.lead_manager || p.lead_owner))
+    + td(vids.length, 'num') + td(n(views), 'num') + td(n(Math.round(views / Math.max(1, counted.length))), 'num')
+    + td(n(sum('likes')), 'num') + td(n(sum('comments')), 'num')
+    + td(dated.length ? esc(fmtDMY(dated[0])) : '', 'dt')
+    + td(budget ? esc(budget.toLocaleString()) : esc(uniq('budget')), 'num')
+    + td(esc(uniq('referral'))) + td(esc(uniq('saas')))
+    + td(links, 'plinks') + td(esc(uniq('notes')), 'notes')
+    + '</tr>';
+}
+function renderPartners() {
+  const list = $('list');
+  $('pager').style.display = 'none';
+  state.grid.sig = ''; state.grid.tbody = null; state.grid.win = null;
+  const q = ($('video-search').value || '').trim().toLowerCase();
+  let ps = state.partners || [];
+  if (q) ps = ps.filter(p => [p.handle, p.name, p.email, p.country, p.lead_owner, p.lead_manager, p.platform].join(' ').toLowerCase().includes(q));
+  // Most recent partner first: whoever's latest video is newest.
+  const last = p => p.videos.map(v => v.date_posted || '').sort().pop() || '';
+  ps = ps.slice().sort((a, b) => last(b).localeCompare(last(a)) || b.videos.length - a.videos.length);
+  $('entry-count').textContent = ps.length ? '(' + ps.length + ')' : '';
+  if (!ps.length) { list.innerHTML = '<div class="empty">No partners yet — a creator becomes one when a video of theirs is in the Videos tab.</div>'; return; }
+  const H = ['Latest video', 'Username', 'Name', 'Email', 'Platform', 'Country', 'Lead owner', 'Videos', 'Total views', 'Avg views',
+    'Likes', 'Comments', 'First video', 'Total budget', 'Referral', 'SAAS', 'Video links', 'Notes'];
+  list.innerHTML = '<table class="grid"><thead><tr>' + H.map(x => '<th>' + esc(x) + '</th>').join('') + '</tr></thead><tbody>'
+    + ps.map(partnerRow).join('') + '</tbody></table>';
+}
+
 async function loadVideos() {
   let d;
   try { d = await api('/api/videos'); } catch (e) { $('list').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
@@ -2722,7 +2785,7 @@ function wire() {
 
   // Videos
   $('add-video-btn').onclick = openAddVideo;
-  $('video-search').addEventListener('input', debounce(() => { if (state.tab === 'videos') renderVideos(); }, 200));
+  $('video-search').addEventListener('input', debounce(() => { if (state.tab === 'videos') renderVideos(); else if (state.tab === 'partners') renderPartners(); }, 200));
   $('v-save').onclick = saveVideo;
   $('v-cancel').onclick = () => $('video-bg').classList.remove('open');
   // Videos CSV import

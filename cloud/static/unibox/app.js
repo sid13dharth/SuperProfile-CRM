@@ -482,13 +482,36 @@ function currentLead() { return state.leads.find(l => l.key === openLeadKey); }
 
 // The open conversation stays highlighted in the list beside it.
 function markOpenRow() {
-  document.querySelectorAll('#list .lead').forEach(r => r.classList.toggle('sel', r.dataset.key === openLeadKey));
+  // Touch only the old and new rows — the list can hold thousands.
+  document.querySelectorAll('#list .lead.sel').forEach(r => { if (r.dataset.key !== openLeadKey) r.classList.remove('sel'); });
+  if (openLeadKey) {
+    const row = document.querySelector(`#list .lead[data-key="${CSS.escape(openLeadKey)}"]`);
+    if (row) row.classList.add('sel');
+  }
+}
+
+/* The list switches between full width and the narrow column in ONE step —
+   never animated, because re-wrapping every row per frame is what looked
+   floppy. Opening: narrow first, then the pane slides in over the freed space.
+   Closing: the pane slides out, and only then does the list widen. */
+let paneTimer = 0;
+function setPaneLayout(open) {
+  clearTimeout(paneTimer);
+  document.body.classList.remove('pane-widened');
+  if (open) { document.body.classList.add('pane-open'); return; }
+  paneTimer = setTimeout(() => {
+    if ($('drawer').classList.contains('open')) return;   // reopened meanwhile
+    document.body.classList.remove('pane-open');
+    document.body.classList.add('pane-widened');
+    paneTimer = setTimeout(() => document.body.classList.remove('pane-widened'), 260);
+  }, 340);   // = the slide in hig.css
 }
 
 function openDrawer(key) {
   openLeadKey = key;
   markOpenRow();
   $('overlay').style.display = 'block';
+  setPaneLayout(true);
   $('drawer').classList.add('open');
   renderDrawerHead();
   $('thread').innerHTML = '<div class="empty">Loading conversation…</div>';
@@ -500,6 +523,7 @@ function closeDrawer() {
   markOpenRow();
   $('overlay').style.display = 'none';
   $('drawer').classList.remove('open');
+  setPaneLayout(false);
 }
 
 /* ── Manual quoted-rate override ────────────────────── */
