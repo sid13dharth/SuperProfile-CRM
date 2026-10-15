@@ -24,6 +24,7 @@ const REAL_BUCKETS = [
   ['waiting', '🟢 Waiting on Them'],
   ['snoozed', '💤 Snoozed'],
   ['closed', '✅ Closed'],
+  ['ended', '⏹ Ended'],
 ];
 // Tabs shown to the user. "needs_reply" is a combined view of the two reply buckets.
 // Snoozing was retired: no Snoozed tab. Anything still snoozed shows under All
@@ -37,7 +38,7 @@ function tabBuckets(tab) {
 const ACTION_LABEL = {
   first_reply: '1st Reply', in_conversation: 'In Conversation',
   followup_due: 'Follow up now', waiting: 'Waiting on them',
-  snoozed: 'Snoozed', closed: 'Closed',
+  snoozed: 'Snoozed', closed: 'Closed', ended: 'Conversation ended',
 };
 // Chip colour tone per built-in status (custom statuses fall back to 'info').
 const STATUS_TONE = {
@@ -316,7 +317,8 @@ function renderCatFilter() {
 // The bucket names carry an emoji for the old tab pills; the sidebar draws its own icons.
 const plainLabel = s => String(s).replace(/^[^\p{L}\p{N}]+/u, '');
 function renderTabs() {
-  const total = state.leads.length;
+  // Ended conversations are out of every count, All included; they have their own tab.
+  const total = state.leads.filter(l => l.bucket !== 'ended').length;
   let html = `<button class="tab ${activeTab === 'all' ? 'active' : ''}" data-tab="all">All<span class="n">${total}</span></button>`;
   for (const [key, label] of TABS) {
     const n = key === 'needs_reply'
@@ -447,7 +449,7 @@ function renderList() {
   const applyRate = ls => (rateFilter && rateBar)
     ? ls.filter(l => rateBucket(l.quoted_per_unit_usd) === rateFilter) : ls;
   let html = '';
-  const groups = activeTab === 'all' ? REAL_BUCKETS.map(b => b[0]) : tabBuckets(activeTab);
+  const groups = activeTab === 'all' ? REAL_BUCKETS.map(b => b[0]).filter(b => b !== 'ended') : tabBuckets(activeTab);
   const showHeaders = groups.length > 1;
   let any = false;
   for (const bucket of groups) {
@@ -464,7 +466,8 @@ function renderList() {
   el.querySelectorAll('.rate-chip').forEach(b =>
     b.onclick = () => { rateFilter = b.dataset.rate; renderList(); });
   el.querySelectorAll('.lead').forEach(row =>
-    row.onclick = () => openDrawer(row.dataset.key));
+    row.onclick = () => (row.dataset.key === openLeadKey && $('drawer').classList.contains('open'))
+      ? closeDrawer() : openDrawer(row.dataset.key));
   markOpenRow();
 }
 
@@ -662,11 +665,26 @@ function renderDrawerHead() {
 
   // Snoozing was retired. A conversation snoozed before that keeps one way out
   // until its snooze runs out by itself; nothing new can be snoozed.
-  $('d-actions').innerHTML = l.bucket === 'snoozed'
-    ? '<button class="sbtn" data-snooze="0">🔔 Unsnooze</button>' : '';
+  // End conversation: out of every inbox count (deal done, failed, whatever the
+  // reason) and into Ended, until someone reopens it.
+  $('d-actions').innerHTML = (l.bucket === 'snoozed'
+    ? '<button class="sbtn" data-snooze="0">🔔 Unsnooze</button>' : '')
+    + (l.bucket === 'ended'
+      ? '<button class="sbtn end-btn" data-end="0" title="Put it back in the inbox">Reopen conversation</button>'
+      : '<button class="sbtn end-btn" data-end="1" title="Stop counting this conversation as one to reply to">End conversation</button>');
   $('d-actions').querySelectorAll('[data-snooze]').forEach(b => b.onclick = async () => {
     try { await api('/api/lead/snooze', { key: openLeadKey, days: +b.dataset.snooze }); }
     catch (e) { toast(e.message, true); }
+  });
+  $('d-actions').querySelectorAll('[data-end]').forEach(b => b.onclick = async () => {
+    const end = b.dataset.end === '1';
+    b.disabled = true;
+    try {
+      await api('/api/lead/end', { key: openLeadKey, end });
+      toast(end ? 'Conversation ended — it is in Ended now' : 'Conversation reopened');
+      closeDrawer();
+      await refresh();
+    } catch (e) { toast(e.message, true); b.disabled = false; }
   });
 }
 
@@ -953,6 +971,9 @@ async function loadLeadFacts(key) {
   const linkify = v => /^https?:\/\//i.test(v)
     ? `<a href="${escAttr(v)}" target="_blank" rel="noopener">${esc(v.replace(/^https?:\/\//i, ''))}</a>`
     : esc(v);
+  // Instantly stores the campaign as its id; show the name we know it by.
+  const campName = v => { const c = (state.campaigns || []).find(x => x.id === v); return c ? c.name : v; };
+  const shown = f => /^campaign$/i.test(f.name) ? esc(campName(f.value)) : linkify(f.value);
   // Private windows and blocked site data make this throw, not just return null.
   let open = true;
   try { open = localStorage.getItem('lg_facts_open') !== '0'; } catch (e) {}
@@ -961,7 +982,7 @@ async function loadLeadFacts(key) {
     `<div class="facts-head"><span class="caret">▾</span>Lead details · ${fields.length}</div>`
     + '<div class="facts-grid">'
     + fields.map(f => `<div class="facts-row"><span class="k">${esc(f.name)}</span>`
-        + `<span class="v" title="${escAttr(f.value)}">${linkify(f.value)}</span></div>`).join('')
+        + `<span class="v" title="${escAttr(/^campaign$/i.test(f.name) ? campName(f.value) : f.value)}">${shown(f)}</span></div>`).join('')
     + '</div>'
     + (d.campaign_matched ? ''
         : '<div class="facts-note">From this lead\'s record in another campaign — they appear in more than one.</div>');

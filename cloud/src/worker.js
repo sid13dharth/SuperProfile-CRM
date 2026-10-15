@@ -718,8 +718,14 @@ function replyToPlain(text) {
   return text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '$1 ($2)');
 }
 
+// A lead who writes again after their conversation was ended brings it back to
+// the inbox: a new reply is never silently swallowed.
+const ENDED_REOPENS_ON_REPLY = true;
+
 // The inbox bucket a conversation falls in (their turn vs ours, follow-up due…).
 function computeBucket(c) {
+  // Ended by the team: out of every inbox count until reopened.
+  if (c.ended_at && !(ENDED_REOPENS_ON_REPLY && (c.last_lead_msg_at || '') > c.ended_at)) return ['ended', null];
   if (TERMINAL_STATUSES.has(c.status)) return ['closed', null];
   const now = nowIso();
   if (c.last_msg_ue_type === 2) {
@@ -742,7 +748,7 @@ function convDict(row, campaignNames) {
     last_lead_msg_at: row.last_lead_msg_at, last_our_msg_at: row.last_our_msg_at,
     last_msg_at: row.last_msg_at, first_reply_at: row.first_reply_at, msg_count: row.msg_count,
     status: row.status, status_source: row.status_source, label: row.label,
-    snoozed_until: row.snoozed_until, social_url: row.social_url, lead_owner: row.lead_owner, poc: row.poc,
+    snoozed_until: row.snoozed_until, ended_at: row.ended_at || '', ended_by: row.ended_by || '', social_url: row.social_url, lead_owner: row.lead_owner, poc: row.poc,
     lead_category: row.lead_category || '',
     deal_videos: row.deal_videos, deal_budget: row.deal_budget, deal_deliverables: row.deal_deliverables,
     deal_referral_pct: row.deal_referral_pct, deal_plan_access: row.deal_plan_access || '',
@@ -2681,6 +2687,18 @@ async function handleApi(request, env, url) {
     if (!r.meta.changes) throw new ApiError(404, 'Conversation not found');
     await touchConv(env, body.key, user, 'snooze', days > 0 ? `${days} days` : 'unsnoozed');
     return json({ ok: true });
+  }
+
+  // End conversation / reopen it (Unibox).
+  if (path === '/api/lead/end' && method === 'POST') {
+    const user = await requireUser(env, request);
+    const end = body.end !== false && body.end !== 0 && body.end !== '0';
+    const r = await env.DB.prepare('UPDATE conversations SET ended_at=?, ended_by=?, updated_at=? WHERE key=?')
+      .bind(end ? nowIso() : '', end ? (user.display_name || user.username) : '', nowIso(), body.key || '').run();
+    if (!r.meta.changes) throw new ApiError(404, 'Conversation not found');
+    await touchConv(env, body.key, user, end ? 'end' : 'reopen', end ? 'conversation ended' : 'conversation reopened');
+    await bumpVersion(env);
+    return json({ ok: true, ended: end });
   }
 
   if (path === '/api/lead/note' && method === 'POST') {

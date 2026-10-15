@@ -45,6 +45,7 @@ const ICONS = {
   inbox: '<rect x="3.5" y="4" width="17" height="16" rx="2.5"/><path d="M3.5 10h17"/>',
   dot: '<circle cx="12" cy="12" r="5" fill="black" stroke="none"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  stop: '<rect x="5" y="5" width="14" height="14" rx="3"/>',
 };
 const icon = k => `url("data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'>${ICONS[k].replace(/"/g, "'")}</svg>`)}")`;
@@ -297,6 +298,7 @@ body.has-gside .body-row > .sidebar, body.has-gside #rightbar { display: none !i
 .gside #tabs .tab[data-tab="waiting"] { --ic: ${icon('hourglass')}; }
 .gside #tabs .tab[data-tab="snoozed"] { --ic: ${icon('snooze')}; }
 .gside #tabs .tab[data-tab="closed"] { --ic: ${icon('check')}; }
+.gside #tabs .tab[data-tab="ended"] { --ic: ${icon('stop')}; }
 .gside #tabs .tab[data-tab="all"] { --ic: ${icon('inbox')}; }
 
 .tb-title b { display: block; font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
@@ -328,13 +330,36 @@ body.has-gside .body-row > .sidebar, body.has-gside #rightbar { display: none !i
   border-left: .5px solid var(--border) !important; box-shadow: -12px 0 30px rgba(0,0,0,.06); background: var(--bg2) !important; z-index: 50; }
 #drawer.open { transform: none; }
 body.sb-hidden #drawer { left: 400px; }
+/* The list narrows as the thread slides in, and widens back as it slides out. */
+body.has-gside .main { max-width: calc(100vw - var(--side-w)); transition: max-width .24s cubic-bezier(.2,.8,.2,1); }
+body.has-gside.sb-hidden .main { max-width: 100vw; }
 body:has(#drawer.open) .main { flex: 0 0 400px; max-width: 400px; }
 body:has(#drawer.open) .tbar .tsearch { width: 160px; flex-basis: 160px; }
 body:has(#drawer.open) .lead { flex-wrap: wrap; gap: 4px 6px !important; }
 body:has(#drawer.open) .lead .who { width: 100% !important; }
 body:has(#drawer.open) .lead .preview { flex: 1 1 100% !important; white-space: normal !important; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 @media (max-width: 1100px) { #drawer { left: var(--side-w); } body.sb-hidden #drawer { left: 0; } }
-.drawer-head { padding: 14px 22px 12px !important; border-bottom: .5px solid var(--border) !important; }
+.drawer-head { padding: 14px 22px 12px !important; border-bottom: .5px solid var(--border) !important;
+  display: grid !important; grid-template-columns: minmax(0, 1fr) auto; column-gap: 20px; align-items: start; position: relative; }
+/* Who it is on the left; Status, Label, POC (and End conversation) top right. */
+/* The name block is unwrapped so its lines can sit on the grid: name beside
+   the dropdowns, then the email/campaign and links lines running full width. */
+.drawer-head > .top, .drawer-head > .top > div { display: contents !important; }
+.drawer-head #d-name { grid-column: 1; grid-row: 1; align-self: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-head #d-mail { grid-column: 1; grid-row: 2; align-self: center; min-width: 0; margin-top: 6px; }
+.drawer-head #d-links { grid-column: 1 / -1; grid-row: 3; margin-top: 2px; }
+.drawer-head > .control-row { grid-column: 2; grid-row: 1; margin: 0 34px 0 0 !important; gap: 10px !important; flex-wrap: nowrap !important; }
+.drawer-head > .drawer-actions { grid-column: 2; grid-row: 2; justify-self: end; align-self: center; margin: 6px 34px 0 0 !important; }
+.drawer-head > .facts, .drawer-head > .deal-panel { grid-column: 1 / -1; }
+.drawer-head > .facts { grid-row: 4; } .drawer-head > .deal-panel { grid-row: 5; }
+.drawer-head .close { position: absolute; top: 12px; right: 14px; }
+.control-row .ctrl { min-width: 0; }
+.control-row select { width: 138px !important; max-width: 138px; min-width: 0 !important; }
+.drawer-head > .control-row .ctrl { flex: 0 0 auto !important; width: auto !important; }
+.end-btn { background: var(--ctl) !important; border: 0 !important; box-shadow: 0 0 0 .5px var(--ctl-line), 0 1px 1px rgba(0,0,0,.05);
+  border-radius: 6px !important; padding: 4px 12px !important; font-size: 12.5px !important; font-weight: 600; color: var(--red) !important; cursor: pointer; }
+.end-btn[data-end="0"] { color: var(--accent) !important; }
+.end-btn:hover { box-shadow: 0 0 0 1px currentColor; }
 .drawer-head h2 { font-size: 20px !important; font-weight: 700; letter-spacing: -.015em; }
 .drawer-head .close { font-size: 0 !important; width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; }
 .drawer-head .close::before { content: ""; width: 15px; height: 15px; background: var(--muted); -webkit-mask: ${icon('close')} center / contain no-repeat; mask: ${icon('close')} center / contain no-repeat; }
