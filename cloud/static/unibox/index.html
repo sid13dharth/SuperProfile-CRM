@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SuperProfile CRM</title>
 <link rel="stylesheet" href="/unibox/style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/unibox/hig.css">
 <script>
   /* Theme before first paint. Unibox usually runs inside the Lead-Gen app in
      an iframe, so prefer the theme the parent passes on the URL; fall back to
@@ -38,41 +41,66 @@
   </div>
 </div>
 
+<!-- Liquid glass for the sidebar only (Apple: never on content). -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><filter id="liquid" x="0%" y="0%" width="100%" height="100%" filterUnits="objectBoundingBox">
+  <feTurbulence type="fractalNoise" baseFrequency="0.008 0.008" numOctaves="1" seed="1.5" result="t"/>
+  <feGaussianBlur in="t" stdDeviation="3" result="soft"/>
+  <feDisplacementMap in="SourceGraphic" in2="soft" scale="80" xChannelSelector="R" yChannelSelector="G"/>
+</filter></svg>
+
+<!-- Sidebar: CRM ｜ Unibox (when inside the Lead-Gen app), the inbox buckets,
+     the views and tools, and you. Same ids as before, so every handler binds. -->
+<nav id="gside" class="gside" style="display:none">
+  <div class="g-fx"></div><div class="g-tint"></div>
+  <div class="g-in">
+    <div class="g-id"><div class="g-icon">SP</div><div><b>SuperProfile</b><span>Unibox</span></div></div>
+    <div class="g-sw" id="g-sw" hidden>
+      <button data-app="crm" title="CRM — lead pipeline">CRM</button>
+      <button class="on" data-app="unibox" title="Unibox — email replies">Unibox</button>
+    </div>
+    <div class="g-grp">Inbox</div>
+    <div id="tabs"></div>
+      <div class="g-grp">Workspace</div>
+    <div class="g-tools">
+      <button class="nav-item active" data-view="home">Inbox</button>
+      <button class="nav-item" data-view="campaigns">Campaigns</button>
+      <button class="nav-item" data-view="analytics">Analytics</button>
+      <button class="rb-item" id="sync-now" title="Pull latest from Instantly now">Sync now</button>
+      <button class="rb-item" id="export-btn" title="Export the current view as CSV">Export</button>
+      <button class="rb-item" id="stats-btn" title="Reply and pipeline stats">Stats</button>
+      <button class="rb-item" id="manage-btn" title="Manage labels &amp; statuses">Labels</button>
+      <button class="rb-item" id="activity-btn" style="display:none" title="Per-member daily activity">Activity</button>
+      <button class="rb-item" id="team-btn" style="display:none" title="Manage teammates">Team</button>
+    </div>
+    <div class="g-grow"></div>
+    <div class="g-ws pops"><select id="ws-select" title="Workspace (Instantly account)"></select>
+      <button class="hbtn" id="ws-manage" style="display:none" title="Manage workspaces">⚙</button></div>
+    <div class="g-foot">
+      <div class="g-av" id="g-av"></div>
+      <div class="g-me"><span id="who"></span><small><span class="sync-dot" id="sync-dot"></span><span id="sync-pill">connecting…</span></small></div>
+      <button class="g-btn" id="theme-btn" title="Switch between light and dark" aria-label="Switch between light and dark"></button>
+      <button class="g-btn" id="logout" title="Log out" aria-label="Log out"></button>
+    </div>
+  </div>
+</nav>
+
 <!-- Main app -->
 <div id="app">
-  <header>
-    <div class="logo">SuperProfile <span>CRM</span></div>
-    <div class="sync-pill"><span class="sync-dot" id="sync-dot"></span><span id="sync-pill">connecting…</span></div>
-    <select id="ws-select" title="Workspace (Instantly account)"></select>
-    <button class="hbtn" id="ws-manage" style="display:none" title="Manage workspaces">⚙</button>
-    <div class="spacer"></div>
-    <span id="who" style="color:var(--muted);font-size:13px"></span>
-    <button class="hbtn" id="logout">Log out</button>
-  </header>
 
-  <!-- Right rail: the tools that used to crowd the header. Same ids, same
-       titles — only moved, so every handler still binds. -->
-  <nav id="rightbar">
-    <button class="rb-item" id="sync-now" title="Pull latest from Instantly now">Sync now</button>
-    <button class="rb-item" id="export-btn" title="Export the current view as CSV">Export</button>
-    <button class="rb-item" id="stats-btn" title="Reply and pipeline stats">Stats</button>
-    <button class="rb-item" id="manage-btn" title="Manage labels &amp; statuses">Labels</button>
-    <button class="rb-item" id="activity-btn" style="display:none" title="Per-member daily activity">Activity</button>
-    <button class="rb-item" id="team-btn" style="display:none" title="Manage teammates">Team</button>
-    <div class="rb-spacer"></div>
-    <div class="rb-sep"></div>
-    <button class="rb-item" id="theme-btn" title="Switch between light and dark">Theme</button>
-  </nav>
+
+
 
   <div class="body-row">
-    <nav class="sidebar">
-      <button class="nav-item active" data-view="home">🏠 Home</button>
-      <button class="nav-item" data-view="campaigns">📣 Campaigns</button>
-      <button class="nav-item" data-view="analytics">📈 Analytics</button>
-    </nav>
+
     <div class="main">
+      <header class="tbar">
+        <button class="tb-btn" id="sb-toggle" title="Show or hide the sidebar" aria-label="Show or hide the sidebar"></button>
+        <div class="tb-title"><b id="ub-title">Needs Reply</b><span id="ub-sub">Newest reply first</span></div>
+        <div class="spacer"></div>
+        <input id="search" class="tsearch" placeholder="Search name, email, subject…">
+      </header>
       <div id="view-home">
-  <div id="filters">
+  <div id="filters" class="pops">
     <div class="dd" id="campaign-dd">
       <button class="dd-btn" id="campaign-btn">All campaigns ▾</button>
       <div class="dd-menu" id="campaign-menu"></div>
@@ -84,7 +112,6 @@
       <button class="dd-btn" id="cat-btn" title="Filter by the lead's category in the CRM">Category: any ▾</button>
       <div class="dd-menu" id="cat-menu"></div>
     </div>
-    <input id="search" placeholder="Search name, email, subject…">
     <label style="color:var(--muted);font-size:12px">Replied from</label>
     <input type="date" id="date-from">
     <label style="color:var(--muted);font-size:12px">to</label>
@@ -99,7 +126,6 @@
     <button class="hbtn" id="clear-filters">Clear all filters</button>
   </div>
 
-  <div id="tabs"></div>
   <div id="list"><div class="empty">Loading…</div></div>
       </div><!-- /view-home -->
 

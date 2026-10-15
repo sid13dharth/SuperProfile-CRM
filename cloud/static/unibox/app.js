@@ -26,7 +26,9 @@ const REAL_BUCKETS = [
   ['closed', '✅ Closed'],
 ];
 // Tabs shown to the user. "needs_reply" is a combined view of the two reply buckets.
-const TABS = [['needs_reply', '🔴 Needs Reply'], ...REAL_BUCKETS];
+// Snoozing was retired: no Snoozed tab. Anything still snoozed shows under All
+// (its own group there) and returns to its bucket when the snooze runs out.
+const TABS = [['needs_reply', '🔴 Needs Reply'], ...REAL_BUCKETS.filter(([k]) => k !== 'snoozed')];
 const BUCKET_NAME = Object.fromEntries([...REAL_BUCKETS, ['needs_reply', '🔴 Needs Reply']]);
 function tabBuckets(tab) {
   return tab === 'needs_reply' ? ['first_reply', 'in_conversation'] : [tab];
@@ -120,6 +122,7 @@ function daysBadge(lead) {
 function showLogin(needsSetup) {
   $('login-view').style.display = 'flex';
   $('app').style.display = 'none';
+  $('gside').style.display = 'none';
   $('login-title').textContent = needsSetup ? 'Create admin account' : 'Sign in';
   $('login-sub').textContent = needsSetup
     ? 'First run — create the admin account for your team.'
@@ -310,6 +313,8 @@ function renderCatFilter() {
   });
 }
 
+// The bucket names carry an emoji for the old tab pills; the sidebar draws its own icons.
+const plainLabel = s => String(s).replace(/^[^\p{L}\p{N}]+/u, '');
 function renderTabs() {
   const total = state.leads.length;
   let html = `<button class="tab ${activeTab === 'all' ? 'active' : ''}" data-tab="all">All<span class="n">${total}</span></button>`;
@@ -317,11 +322,12 @@ function renderTabs() {
     const n = key === 'needs_reply'
       ? (state.counts.first_reply || 0) + (state.counts.in_conversation || 0)
       : (state.counts[key] || 0);
-    html += `<button class="tab ${activeTab === key ? 'active' : ''}" data-tab="${key}">${label}<span class="n">${n}</span></button>`;
+    html += `<button class="tab ${activeTab === key ? 'active' : ''}" data-tab="${key}">${plainLabel(label)}<span class="n">${n}</span></button>`;
   }
   $('tabs').innerHTML = html;
+  if (activeView === 'home') $('ub-title').textContent = activeTab === 'all' ? 'All Conversations' : plainLabel(BUCKET_NAME[activeTab] || 'Inbox');
   $('tabs').querySelectorAll('.tab').forEach(b =>
-    b.onclick = () => { activeTab = b.dataset.tab; renderTabs(); renderList(); });
+    b.onclick = () => { activeTab = b.dataset.tab; if (activeView !== 'home') switchView('home'); renderTabs(); renderList(); });
 }
 
 function sortLeads(leads) {
@@ -459,6 +465,7 @@ function renderList() {
     b.onclick = () => { rateFilter = b.dataset.rate; renderList(); });
   el.querySelectorAll('.lead').forEach(row =>
     row.onclick = () => openDrawer(row.dataset.key));
+  markOpenRow();
 }
 
 function esc(s) {
@@ -470,8 +477,14 @@ function escAttr(s) { return esc(s); }
 /* ── Drawer ─────────────────────────────────────────── */
 function currentLead() { return state.leads.find(l => l.key === openLeadKey); }
 
+// The open conversation stays highlighted in the list beside it.
+function markOpenRow() {
+  document.querySelectorAll('#list .lead').forEach(r => r.classList.toggle('sel', r.dataset.key === openLeadKey));
+}
+
 function openDrawer(key) {
   openLeadKey = key;
+  markOpenRow();
   $('overlay').style.display = 'block';
   $('drawer').classList.add('open');
   renderDrawerHead();
@@ -481,6 +494,7 @@ function openDrawer(key) {
 
 function closeDrawer() {
   openLeadKey = null;
+  markOpenRow();
   $('overlay').style.display = 'none';
   $('drawer').classList.remove('open');
 }
@@ -646,16 +660,10 @@ function renderDrawerHead() {
 
   renderDealPanel(l);
 
-  // Snooze buttons
-  let html = '';
-  if (l.bucket === 'snoozed') {
-    html += `<button class="sbtn" data-snooze="0">🔔 Unsnooze</button>`;
-  } else {
-    html += `<button class="sbtn" data-snooze="2">💤 2d</button>
-             <button class="sbtn" data-snooze="5">💤 5d</button>
-             <button class="sbtn" data-snooze="7">💤 7d</button>`;
-  }
-  $('d-actions').innerHTML = html;
+  // Snoozing was retired. A conversation snoozed before that keeps one way out
+  // until its snooze runs out by itself; nothing new can be snoozed.
+  $('d-actions').innerHTML = l.bucket === 'snoozed'
+    ? '<button class="sbtn" data-snooze="0">🔔 Unsnooze</button>' : '';
   $('d-actions').querySelectorAll('[data-snooze]').forEach(b => b.onclick = async () => {
     try { await api('/api/lead/snooze', { key: openLeadKey, days: +b.dataset.snooze }); }
     catch (e) { toast(e.message, true); }
@@ -1364,6 +1372,8 @@ async function addWorkspace() {
 /* ── Sidebar views: Home / Campaigns / Analytics ────── */
 function switchView(view) {
   activeView = view;
+  $('ub-title').textContent = view === 'campaigns' ? 'Campaigns' : view === 'analytics' ? 'Analytics' : (activeTab === 'all' ? 'All Conversations' : plainLabel(BUCKET_NAME[activeTab] || 'Inbox'));
+  $('ub-sub').textContent = view === 'home' ? 'Newest reply first' : '';
   document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   $('view-home').style.display = view === 'home' ? 'flex' : 'none';
   $('view-campaigns').style.display = view === 'campaigns' ? 'block' : 'none';
@@ -1781,8 +1791,13 @@ async function init() {
   me = info.user;
   $('login-view').style.display = 'none';
   $('app').style.display = 'flex';
-  // Drives the rail's visibility and the page's right margin, in CSS.
-  document.body.classList.add('has-rail');
+  $('gside').style.display = 'flex';
+  document.body.classList.add('has-gside');
+  $('g-av').textContent = String(me.display_name || me.username || '?').trim().charAt(0).toUpperCase();
+  try { document.body.classList.toggle('sb-hidden', localStorage.getItem('lg_sb') === 'hidden'); } catch (e) {}
+  // Inside the Lead-Gen app the sidebar switches back to the CRM; opened on its
+  // own there is nothing to switch to, so the switch stays hidden.
+  if (parent !== window) $('g-sw').hidden = false;
   $('who').textContent = me.display_name || me.username;
   $('team-btn').style.display = me.is_admin ? '' : 'none';
   $('activity-btn').style.display = me.is_admin ? '' : 'none';
@@ -1875,6 +1890,13 @@ document.addEventListener('DOMContentLoaded', () => {
   $('export-btn').onclick = exportCsv;
   $('stats-btn').onclick = openStats;
   $('theme-btn').onclick = () => setTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+  $('sb-toggle').onclick = () => {
+    const hidden = document.body.classList.toggle('sb-hidden');
+    try { localStorage.setItem('lg_sb', hidden ? 'hidden' : 'shown'); } catch (e) {}
+  };
+  $('g-sw').querySelector('[data-app="crm"]').onclick = () => {
+    try { parent.postMessage({ type: 'lg-view', view: 'crm' }, location.origin); } catch (e) {}
+  };
   $('stats-close').onclick = () => { $('stats-bg').style.display = 'none'; };
   $('activity-btn').onclick = openActivity;
   $('activity-close').onclick = () => { $('activity-bg').style.display = 'none'; };

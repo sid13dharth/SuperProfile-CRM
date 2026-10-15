@@ -17,6 +17,13 @@ function setTheme(t) {
   try { if (uf && uf.contentWindow) uf.contentWindow.postMessage({ type: 'lg-theme', theme: t }, '*'); } catch (e) {}
 }
 
+// The Unibox shows its own sidebar (with a CRM ｜ Unibox switch) while it is
+// open; its CRM button asks this page to come back. Same origin only.
+addEventListener('message', e => {
+  const d = e && e.data;
+  if (e.origin === location.origin && d && d.type === 'lg-view' && d.view === 'crm') switchView('crm');
+});
+
 // The Unibox pane has its own switch; a toggle there should move this page too.
 addEventListener('message', e => {
   const d = e && e.data;
@@ -138,6 +145,9 @@ function showApp() {
   $('sidebar').style.display = 'flex';
   document.body.classList.add('has-sidebar');
   $('who').textContent = state.me.display_name || state.me.username;
+  $('g-av').textContent = String(state.me.display_name || state.me.username || '?').trim().charAt(0).toUpperCase();
+  // The sidebar can be hidden for a wider table; remembered per machine.
+  try { document.body.classList.toggle('sb-hidden', localStorage.getItem('lg_sb') === 'hidden'); } catch (e) {}
   $('owner-name').textContent = state.me.display_name || state.me.username;
   if (state.me.is_admin) $('team-btn').style.display = '';
   loadCategories();
@@ -2769,6 +2779,10 @@ function wire() {
   // Activity
   $('activity-btn').onclick = openActivity;
   $('theme-btn').onclick = () => setTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+  $('sb-toggle').onclick = () => {
+    const hidden = document.body.classList.toggle('sb-hidden');
+    try { localStorage.setItem('lg_sb', hidden ? 'hidden' : 'shown'); } catch (e) {}
+  };
   $('activity-close').onclick = () => $('activity-bg').classList.remove('open');
   // Activity modal's own date controls (independent of the leads-page filter).
   $('act-from').onchange = runActivity;

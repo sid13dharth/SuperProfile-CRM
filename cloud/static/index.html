@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SuperProfile Lead-Gen</title>
 <link rel="stylesheet" href="/style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/hig.css">
 <script>
   /* Runs before the stylesheet paints, so the saved theme is on <html> from
      the very first frame. Wrapped because storage throws in some privacy
@@ -18,29 +21,47 @@
 </head>
 <body>
 
-<!-- Left sidebar: switch between CRM (pipeline) and Unibox (email replies).
-     Hidden until logged in; revealed by showApp(). -->
-<nav id="sidebar" style="display:none">
-  <div class="sb-logo" title="SuperProfile">SP</div>
-  <button class="sb-item active" data-view="crm" title="CRM — lead pipeline"><span class="sb-ic">📊</span><span class="sb-lbl">CRM</span></button>
-  <button class="sb-item" data-view="unibox" title="Unibox — email replies"><span class="sb-ic">📬</span><span class="sb-lbl">Unibox</span></button>
-</nav>
-<!-- Right rail: the tools that used to crowd the header. Same buttons, same
-     ids, same titles — only moved. Visibility is CSS-driven off .has-sidebar,
-     so nothing in app.js has to show it. -->
-<nav id="rightbar">
-  <button class="rb-item" id="funnel-btn" title="Funnel analytics — where leads leak">Funnel</button>
-  <button class="rb-item" id="classify-btn" title="Add or remove statuses, labels and categories">Manage</button>
-  <button class="rb-item" id="pipe-btn" title="Manage the pipeline stages &amp; labels">Pipeline</button>
-  <button class="rb-item" id="campplat-btn" title="Which platform each Instantly campaign is for">Campaigns</button>
-  <button class="rb-item" id="activity-btn" title="Per-member daily activity">Activity</button>
-  <button class="rb-item" id="ig-btn" title="Fetch followers / last post / avg reel views from Instagram">IG data</button>
-  <button class="rb-item" id="refresh-crm-btn" title="Re-check every lead against the CRM">Refresh CRM</button>
-  <button class="rb-item" id="master-btn" title="Upload / refresh the master username list">Master list</button>
-  <button class="rb-item" id="team-btn" style="display:none">Team</button>
-  <div class="rb-spacer"></div>
-  <div class="rb-sep"></div>
-  <button class="rb-item" id="theme-btn" title="Switch between light and dark">Theme</button>
+<!-- Liquid glass: the sidebar bends whatever sits behind it (the light blue
+     or glossy black wall). Used by .g-fx only — never on content. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><filter id="liquid" x="0%" y="0%" width="100%" height="100%" filterUnits="objectBoundingBox">
+  <feTurbulence type="fractalNoise" baseFrequency="0.008 0.008" numOctaves="1" seed="1.5" result="t"/>
+  <feGaussianBlur in="t" stdDeviation="3" result="soft"/>
+  <feDisplacementMap in="SourceGraphic" in2="soft" scale="80" xChannelSelector="R" yChannelSelector="G"/>
+</filter></svg>
+
+<!-- Sidebar: CRM ｜ Unibox, platforms, tools, you. Floating glass over the wall.
+     The tool buttons keep their ids, so every handler still binds; their
+     icons come from CSS because refreshCrm() rewrites button text. -->
+<nav id="sidebar" class="gside" style="display:none">
+  <div class="g-fx"></div><div class="g-tint"></div>
+  <div class="g-in">
+    <div class="g-id"><div class="g-icon">SP</div><div><b>SuperProfile</b><span>Lead-gen</span></div></div>
+    <div class="g-sw">
+      <button class="sb-item active" data-view="crm" title="CRM — lead pipeline">CRM</button>
+      <button class="sb-item" data-view="unibox" title="Unibox — email replies">Unibox</button>
+    </div>
+    <div class="g-grp">Platforms</div>
+    <div class="plat-bar" id="plat-bar" role="tablist" aria-label="Platform"></div>
+    <div class="g-grp">Workspace</div>
+    <div id="rightbar" class="g-tools">
+      <button class="rb-item" id="funnel-btn" title="Funnel analytics — where leads leak">Funnel</button>
+      <button class="rb-item" id="classify-btn" title="Add or remove statuses, labels and categories">Manage</button>
+      <button class="rb-item" id="pipe-btn" title="Manage the pipeline stages &amp; labels">Pipeline</button>
+      <button class="rb-item" id="campplat-btn" title="Which platform each Instantly campaign is for">Campaigns</button>
+      <button class="rb-item" id="activity-btn" title="Per-member daily activity">Activity</button>
+      <button class="rb-item" id="ig-btn" title="Fetch followers / last post / avg reel views from Instagram">IG data</button>
+      <button class="rb-item" id="refresh-crm-btn" title="Re-check every lead against the CRM">Refresh CRM</button>
+      <button class="rb-item" id="master-btn" title="Upload / refresh the master username list">Master list</button>
+      <button class="rb-item" id="team-btn" style="display:none">Team</button>
+    </div>
+    <div class="g-grow"></div>
+    <div class="g-foot">
+      <div class="g-av" id="g-av"></div>
+      <div class="g-me"><span id="who" class="who"></span><small><span class="sync-dot" id="live-dot"></span><span id="live-pill">live</span></small></div>
+      <button class="g-btn" id="theme-btn" title="Switch between light and dark" aria-label="Switch between light and dark"></button>
+      <button class="g-btn" id="logout" title="Log out" aria-label="Log out"></button>
+    </div>
+  </div>
 </nav>
 
 <!-- Unibox = the CRM interface, same-origin, on the merged DB (shares this login). -->
@@ -61,30 +82,21 @@
 
 <!-- Main app -->
 <div id="app">
-  <header>
-    <div class="logo">SuperProfile <span>Lead-Gen</span></div>
-    <div class="sync-pill"><span class="sync-dot" id="live-dot"></span><span id="live-pill">live</span></div>
+  <header class="tbar">
+    <button class="tb-btn" id="sb-toggle" title="Show or hide the sidebar" aria-label="Show or hide the sidebar"></button>
+    <h2 id="list-title" class="tb-title">Today's Leads <span class="count" id="entry-count"></span></h2>
+    <div class="tab-bar" id="tab-bar"></div>
     <div class="spacer"></div>
-    <span id="who" class="who"></span>
-    <button class="hbtn" id="logout">Log out</button>
+    <div class="tab-tools" id="tab-tools">
+      <input id="search" class="tsearch" placeholder="Search handle, name or email…">
+    </div>
+    <button class="add-lead-btn" id="open-add-btn">Add Lead</button>
   </header>
 
   <!-- Entries list (full width) -->
   <section class="list-panel">
-    <!-- Tabs and the search box share one line; the tab bar keeps its own
-         element so renderTabs() still owns its HTML. -->
-    <!-- Platforms sit above the stage tabs: pick a platform, then a stage. -->
-    <div class="plat-bar" id="plat-bar" role="tablist" aria-label="Platform"></div>
-    <div class="tab-row">
-      <div class="tab-bar" id="tab-bar"></div>
-      <div class="tab-tools" id="tab-tools">
-        <input id="search" placeholder="Search handle, name or email…">
-      </div>
-    </div>
     <div class="list-head">
-      <h2 id="list-title">Today's Leads <span class="count" id="entry-count"></span></h2>
-      <button class="add-lead-btn" id="open-add-btn">＋ Add lead</button>
-      <div class="list-controls" id="lead-controls">
+      <div class="list-controls pops" id="lead-controls">
         <select id="status-filter" title="Filter by status"><option value="">Any status</option></select>
         <select id="label-filter" title="Filter by label"><option value="">Any label</option></select>
         <select id="delivery-filter" title="Filter by delivery status" style="display:none"><option value="">Any delivery status</option></select>
@@ -100,13 +112,13 @@
         <button class="hbtn clear-btn" id="clear-filters" title="Reset every filter, the search box and the date range">Clear all filters</button>
         <button class="hbtn" id="export-csv" title="Download every lead matching the current filters">⬇ Export CSV</button>
       </div>
-      <div class="list-controls" id="video-controls" style="display:none">
+      <div class="list-controls pops" id="video-controls" style="display:none">
         <input id="video-search" placeholder="Search videos (lead, country, type…)">
         <button class="hbtn" id="import-video-btn" title="Import a CSV of videos">⬆ Import CSV</button>
         <button class="hbtn" id="add-video-btn">＋ Add video</button>
       </div>
     </div>
-    <div class="date-bar">
+    <div class="date-bar pops">
       <span class="date-label">📅 Found between</span>
       <input type="date" id="date-from" title="From date (IST)">
       <span class="date-label">and</span>
