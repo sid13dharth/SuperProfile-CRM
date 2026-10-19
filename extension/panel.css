@@ -1,85 +1,194 @@
-/* Scoped hard: every rule is under #spcrm-panel so nothing can leak into
-   Instagram's own styles, and !important on the basics because Instagram sets
-   aggressive resets on generic elements. */
+/* The CRM panel, in the CRM's liquid-glass style.
+
+   Scoped hard: every rule is under #spcrm-panel so nothing leaks into the host
+   site, and !important on the basics because Instagram, YouTube and Skool all
+   reset generic elements aggressively. Light glass by default; .spcrm-dark is
+   set by content.js when the site itself is dark (each site has its own theme
+   switch the OS setting does not see). Colours are tokens, so the dark block
+   only swaps values. */
 
 #spcrm-panel {
+  --g-bg: rgba(255, 255, 255, .58);
+  --g-line: rgba(255, 255, 255, .7);
+  --g-edge: rgba(0, 0, 0, .10);
+  --g-text: #1d1d1f;
+  --g-muted: rgba(60, 60, 67, .72);
+  --g-faint: rgba(60, 60, 67, .45);
+  --g-hair: rgba(0, 0, 0, .08);
+  --g-ctl: rgba(255, 255, 255, .7);
+  --g-ctl-line: rgba(0, 0, 0, .12);
+  --g-accent: #007aff;
+  --g-green: #248a3d; --g-green-bg: rgba(52, 199, 89, .16);
+  --g-blue: #0a64d8; --g-blue-bg: rgba(0, 122, 255, .13);
+  --g-red: #d70015; --g-red-bg: rgba(255, 59, 48, .13);
+  --g-amber: #b25000; --g-amber-bg: rgba(255, 149, 0, .16);
+  --g-ig: #c3226f; --g-yt: #c4000c; --g-skool: #00897b;
+
   position: fixed !important;
   top: 84px; right: 18px;
-  width: 290px; max-height: 76vh; overflow: auto;
+  width: 300px; max-height: 76vh; overflow: auto;
   z-index: 2147483000 !important;
-  background: #14161a; color: #e8eaed;
-  border: 1px solid #2b3038; border-radius: 12px;
-  box-shadow: 0 10px 34px rgba(0, 0, 0, .55);
-  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-  padding: 0 0 10px;
+  color: var(--g-text) !important;
+  background: var(--g-bg) !important;
+  -webkit-backdrop-filter: blur(26px) saturate(1.8) !important;
+  backdrop-filter: blur(26px) saturate(1.8) !important;
+  border: .5px solid var(--g-edge) !important;
+  border-radius: 18px !important;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .22), 0 2px 6px rgba(0, 0, 0, .06), inset 0 1px 0 var(--g-line) !important;
+  font: 13px/1.42 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", Roboto, sans-serif !important;
+  letter-spacing: -.003em;
+  -webkit-font-smoothing: antialiased;
+  padding: 0 0 12px !important;
+  scrollbar-width: thin;
+  animation: spcrm-in .28s cubic-bezier(.32, .72, 0, 1);
+}
+@keyframes spcrm-in { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { #spcrm-panel { animation: none; } }
+
+#spcrm-panel.spcrm-dark {
+  --g-bg: rgba(30, 30, 32, .62);
+  --g-line: rgba(255, 255, 255, .14);
+  --g-edge: rgba(255, 255, 255, .14);
+  --g-text: #f5f5f7;
+  --g-muted: rgba(235, 235, 245, .68);
+  --g-faint: rgba(235, 235, 245, .40);
+  --g-hair: rgba(255, 255, 255, .09);
+  --g-ctl: rgba(255, 255, 255, .09);
+  --g-ctl-line: rgba(255, 255, 255, .14);
+  --g-accent: #0a84ff;
+  --g-green: #30d158; --g-green-bg: rgba(48, 209, 88, .16);
+  --g-blue: #64a8ff; --g-blue-bg: rgba(10, 132, 255, .18);
+  --g-red: #ff6961; --g-red-bg: rgba(255, 69, 58, .16);
+  --g-amber: #ffb340; --g-amber-bg: rgba(255, 159, 10, .16);
+  --g-ig: #ff5c9a; --g-yt: #ff453a; --g-skool: #4fd1c1;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .5), inset 0 1px 0 var(--g-line) !important;
 }
 #spcrm-panel * { box-sizing: border-box; }
 
+/* Head: app mark, name, which site, version, close. */
 #spcrm-panel .spcrm-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 9px 12px; border-bottom: 1px solid #2b3038;
-  font-size: 12px; letter-spacing: .3px; color: #9aa3ae;
+  display: flex; align-items: center; gap: 7px;
+  padding: 11px 12px 10px 13px; border-bottom: .5px solid var(--g-hair);
+  font-size: 12.5px; color: var(--g-muted);
 }
-#spcrm-panel .spcrm-head b { color: #e8eaed; font-weight: 600; }
-#spcrm-panel .spcrm-x { cursor: pointer; font-size: 17px; line-height: 1; color: #9aa3ae; padding: 0 2px; }
-#spcrm-panel .spcrm-x:hover { color: #fff; }
-#spcrm-panel .spcrm-body { padding: 10px 12px 0; }
+#spcrm-panel .spcrm-icon {
+  width: 20px; height: 20px; border-radius: 6px; flex: none; display: grid; place-items: center;
+  background: linear-gradient(160deg, #3a86ff, #0047d6); color: #fff; font-size: 8.5px; font-weight: 700;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .2);
+}
+#spcrm-panel .spcrm-head b { color: var(--g-text); font-weight: 600; }
+#spcrm-panel .spcrm-site { font-weight: 600; font-size: 11.5px; }
+#spcrm-panel .spcrm-p-instagram { color: var(--g-ig); }
+#spcrm-panel .spcrm-p-youtube { color: var(--g-yt); }
+#spcrm-panel .spcrm-p-skool { color: var(--g-skool); }
+#spcrm-panel .spcrm-ver { font-size: 10px; color: var(--g-faint); margin-left: auto; }
+#spcrm-panel .spcrm-hbtn {
+  cursor: pointer; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; flex: none;
+  font-size: 16px; line-height: 1; color: var(--g-muted); background: var(--g-ctl);
+}
+#spcrm-panel .spcrm-tuck { font-size: 17px; padding-bottom: 2px; }
+#spcrm-panel .spcrm-hbtn:hover { color: var(--g-text); box-shadow: 0 0 0 .5px var(--g-ctl-line); }
+#spcrm-panel .spcrm-body { padding: 11px 13px 0; }
 
-/* A colour-coded left edge so "is this lead live?" reads at a glance. */
-#spcrm-panel.spcrm-in   { border-left: 3px solid #3ddc84; }
-#spcrm-panel.spcrm-out  { border-left: 3px solid #4b5563; }
-#spcrm-panel.spcrm-warn { border-left: 3px solid #f5a524; }
+/* The edge says what you are looking at: red = already a lead, yellow = a
+   lead with no email yet, green = new (not in the CRM), grey = a problem. */
+#spcrm-panel { --g-edge-c: transparent; }
+#spcrm-panel.spcrm-exists  { --g-edge-c: #ff3b30; }
+#spcrm-panel.spcrm-noemail { --g-edge-c: #ffcc00; }
+#spcrm-panel.spcrm-new     { --g-edge-c: #34c759; }
+#spcrm-panel.spcrm-warn    { --g-edge-c: #8e8e93; }
+#spcrm-panel.spcrm-exists, #spcrm-panel.spcrm-noemail, #spcrm-panel.spcrm-new, #spcrm-panel.spcrm-warn {
+  box-shadow: inset 4px 0 0 var(--g-edge-c), 0 18px 50px rgba(0, 0, 0, .22), inset 0 1px 0 var(--g-line) !important;
+}
 
-#spcrm-panel .spcrm-msg { color: #c3c9d1; padding: 2px 0 8px; }
-#spcrm-panel .spcrm-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
-#spcrm-panel .spcrm-stage { font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: #232831; color: #c3c9d1; }
-#spcrm-panel .spcrm-s-responses { background: #10361f; color: #6ee7a0; }
-#spcrm-panel .spcrm-s-closed    { background: #10243d; color: #7ab8ff; }
-#spcrm-panel .spcrm-s-failed    { background: #3a1620; color: #ff9aa8; }
-#spcrm-panel .spcrm-s-leads     { background: #2a2410; color: #ffd479; }
+/* Tucked: the panel slides off the right edge; #spcrm-tab brings it back. */
+#spcrm-panel { transition: transform .38s cubic-bezier(.32, .72, 0, 1), opacity .25s ease; }
+#spcrm-panel.spcrm-tucked { transform: translateX(calc(100% + 30px)); opacity: 0; pointer-events: none; }
+#spcrm-tab {
+  position: fixed !important; top: 96px; right: 0; z-index: 2147483000 !important;
+  display: flex; align-items: center; gap: 5px; padding: 10px 8px 10px 10px; cursor: pointer;
+  border-radius: 14px 0 0 14px; color: #1d1d1f;
+  background: rgba(255, 255, 255, .62); -webkit-backdrop-filter: blur(20px) saturate(1.8); backdrop-filter: blur(20px) saturate(1.8);
+  border: .5px solid rgba(0, 0, 0, .10); border-right: 0;
+  box-shadow: inset 3px 0 0 var(--t-edge, transparent), 0 8px 24px rgba(0, 0, 0, .2);
+  transform: translateX(110%); transition: transform .38s cubic-bezier(.32, .72, 0, 1);
+  font: 600 13px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", sans-serif;
+}
+#spcrm-tab.spcrm-shown { transform: none; }
+#spcrm-tab:hover { padding-left: 11px; }
+#spcrm-tab.spcrm-dark { color: #f5f5f7; background: rgba(30, 30, 32, .66); border-color: rgba(255, 255, 255, .14); }
+#spcrm-tab.spcrm-exists  { --t-edge: #ff3b30; }
+#spcrm-tab.spcrm-noemail { --t-edge: #ffcc00; }
+#spcrm-tab.spcrm-new     { --t-edge: #34c759; }
+#spcrm-tab.spcrm-warn    { --t-edge: #8e8e93; }
+#spcrm-tab .spcrm-tab-chev { font-size: 18px; opacity: .6; margin-top: -2px; }
+#spcrm-tab .spcrm-tab-icon { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center;
+  background: linear-gradient(160deg, #3a86ff, #0047d6); color: #fff; font-size: 8.5px; font-weight: 700; }
+@media (prefers-reduced-motion: reduce) { #spcrm-panel, #spcrm-tab { transition: none; } }
 
-#spcrm-panel .spcrm-crumb { font-size: 11.5px; color: #9aa3ae; margin-bottom: 8px; }
+#spcrm-panel .spcrm-msg { color: var(--g-muted); padding: 2px 0 8px; }
+#spcrm-panel .spcrm-msg b { color: var(--g-text); }
+#spcrm-panel .spcrm-via { font-size: 11.5px; color: var(--g-muted); margin-bottom: 4px; }
+#spcrm-panel .spcrm-via b { color: var(--g-text); font-weight: 600; }
+#spcrm-panel .spcrm-name { font-size: 15px; font-weight: 700; letter-spacing: -.01em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+#spcrm-panel .spcrm-stage { font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 6px; background: var(--g-ctl); color: var(--g-muted); letter-spacing: 0; }
+#spcrm-panel .spcrm-s-responses { background: var(--g-green-bg); color: var(--g-green); }
+#spcrm-panel .spcrm-s-closed    { background: var(--g-blue-bg); color: var(--g-blue); }
+#spcrm-panel .spcrm-s-failed    { background: var(--g-red-bg); color: var(--g-red); }
+#spcrm-panel .spcrm-s-leads     { background: var(--g-amber-bg); color: var(--g-amber); }
+
+#spcrm-panel .spcrm-crumb { font-size: 11.5px; color: var(--g-muted); margin-bottom: 8px; }
 #spcrm-panel .spcrm-sep { opacity: .55; }
-#spcrm-panel .spcrm-row { display: flex; gap: 8px; padding: 2px 0; font-size: 12px; }
-#spcrm-panel .spcrm-k { color: #8b93a0; min-width: 74px; flex: 0 0 74px; }
-#spcrm-panel .spcrm-v { color: #e8eaed; word-break: break-word; }
-#spcrm-panel .spcrm-ago { color: #8b93a0; }
-#spcrm-panel .spcrm-ig { margin-top: 8px; padding-top: 8px; border-top: 1px solid #2b3038; font-size: 11.5px; color: #9aa3ae; }
+#spcrm-panel .spcrm-row { display: flex; gap: 8px; padding: 2.5px 0; font-size: 12.5px; }
+#spcrm-panel .spcrm-k { color: var(--g-muted); min-width: 78px; flex: 0 0 78px; }
+#spcrm-panel .spcrm-v { color: var(--g-text); word-break: break-word; }
+#spcrm-panel .spcrm-ago { color: var(--g-faint); }
+#spcrm-panel .spcrm-ig { margin-top: 9px; padding-top: 9px; border-top: .5px solid var(--g-hair); font-size: 11.5px; color: var(--g-muted); }
+
 /* Actions + state wording */
-#spcrm-panel .spcrm-state { margin-top: 10px; font-size: 12px; color: #c3c9d1; }
-#spcrm-panel .spcrm-flag { margin-top: 10px; font-size: 12px; font-weight: 600; color: #ffd479; }
+#spcrm-panel .spcrm-state { margin-top: 11px; font-size: 12px; color: var(--g-muted); }
+#spcrm-panel .spcrm-flag { margin-top: 11px; font-size: 12px; font-weight: 600; color: var(--g-amber); }
 #spcrm-panel .spcrm-btn {
-  display: block; margin-top: 8px; padding: 7px 10px; border-radius: 8px;
-  background: #232831; border: 1px solid #2b3038; color: #e8eaed;
-  font-size: 12px; font-weight: 600; text-align: center; text-decoration: none;
+  display: block; width: 100%; margin-top: 8px; padding: 7px 10px; border-radius: 9px; cursor: pointer;
+  background: var(--g-ctl) !important; border: 0 !important; color: var(--g-text) !important;
+  box-shadow: 0 0 0 .5px var(--g-ctl-line), 0 1px 1px rgba(0, 0, 0, .05);
+  font: inherit; font-size: 12.5px !important; font-weight: 600; text-align: center; text-decoration: none !important;
 }
-#spcrm-panel .spcrm-btn:hover { border-color: #7ab8ff; color: #fff; }
-#spcrm-panel .spcrm-primary { background: #2f6fe4; border-color: #2f6fe4; }
-#spcrm-panel .spcrm-primary:hover { filter: brightness(1.1); border-color: #2f6fe4; }
+#spcrm-panel .spcrm-btn:hover { box-shadow: 0 0 0 1px var(--g-accent); }
+#spcrm-panel .spcrm-primary { background: var(--g-accent) !important; color: #fff !important; box-shadow: 0 1px 2px rgba(0, 0, 0, .18); }
+#spcrm-panel .spcrm-primary:hover { filter: brightness(1.08); box-shadow: 0 1px 2px rgba(0, 0, 0, .18); }
 
 /* Inline add-email */
 #spcrm-panel .spcrm-mailbox { margin-top: 8px; }
 #spcrm-panel .spcrm-mailbox input {
-  width: 100%; box-sizing: border-box; padding: 7px 9px; border-radius: 8px;
-  border: 1px solid #2b3038; background: #0f1114; color: #e8eaed;
-  font: inherit; font-size: 12px;
+  width: 100%; padding: 7px 10px; border-radius: 9px; border: 0 !important;
+  box-shadow: 0 0 0 .5px var(--g-ctl-line); background: var(--g-ctl) !important; color: var(--g-text) !important;
+  font: inherit; font-size: 12.5px;
 }
-#spcrm-panel .spcrm-mailbox input:focus { border-color: #7ab8ff; outline: none; }
-#spcrm-panel .spcrm-mailmsg { margin-top: 6px; font-size: 11.5px; color: #9aa3ae; min-height: 15px; }
-#spcrm-panel .spcrm-mailmsg.ok { color: #6ee7a0; }
-#spcrm-panel .spcrm-mailmsg.err { color: #ff9aa8; }
-
-#spcrm-panel .spcrm-ver { font-size: 10px; color: #6b7280; margin-left: 6px; font-weight: 400; }
+#spcrm-panel .spcrm-mailbox input:focus { box-shadow: 0 0 0 2px var(--g-accent); outline: none; }
+#spcrm-panel .spcrm-mailmsg { margin-top: 6px; font-size: 11.5px; color: var(--g-muted); min-height: 15px; }
+#spcrm-panel .spcrm-mailmsg.ok { color: var(--g-green); }
+#spcrm-panel .spcrm-mailmsg.err { color: var(--g-red); }
 
 /* Partner block */
 #spcrm-panel .spcrm-partner {
-  margin: 2px 0 10px; padding: 9px 10px; border-radius: 9px;
-  background: rgba(99, 200, 130, .10); border: 1px solid rgba(99, 200, 130, .34);
+  margin: 2px 0 10px; padding: 9px 11px; border-radius: 12px;
+  background: var(--g-green-bg); box-shadow: inset 0 0 0 .5px rgba(52, 199, 89, .35);
 }
-#spcrm-panel .spcrm-ptag { font-size: 11.5px; font-weight: 700; color: #6ee7a0; margin-bottom: 4px; }
-#spcrm-panel .spcrm-pline { font-size: 12px; color: #e8eaed; }
-#spcrm-panel .spcrm-pstats { font-size: 11.5px; color: #9aa3ae; margin-top: 2px; }
-#spcrm-panel .spcrm-dead { color: #ff9aa8; font-size: 11px; }
-#spcrm-panel .spcrm-plink { display: block; margin-top: 5px; font-size: 11.5px; color: #7ab8ff; text-decoration: none; }
+#spcrm-panel .spcrm-ptag { font-size: 11.5px; font-weight: 700; color: var(--g-green); margin-bottom: 4px; }
+#spcrm-panel .spcrm-pline { font-size: 12px; color: var(--g-text); }
+#spcrm-panel .spcrm-pstats { font-size: 11.5px; color: var(--g-muted); margin-top: 2px; }
+#spcrm-panel .spcrm-dead { color: var(--g-red); font-size: 11px; }
+#spcrm-panel .spcrm-plink { display: block; margin-top: 5px; font-size: 11.5px; color: var(--g-accent); text-decoration: none; }
 #spcrm-panel .spcrm-plink:hover { text-decoration: underline; }
 #spcrm-panel .spcrm-partner .spcrm-btn { margin-top: 7px; }
+
+/* Also a lead on other platforms (same email) */
+#spcrm-panel .spcrm-also { margin: 2px 0 9px; padding: 8px 10px; border-radius: 11px; background: var(--g-ctl); box-shadow: inset 0 0 0 .5px var(--g-ctl-line); }
+#spcrm-panel .spcrm-also-h { font-size: 11px; font-weight: 600; color: var(--g-muted); margin-bottom: 4px; }
+#spcrm-panel .spcrm-also-r { display: flex; align-items: center; gap: 7px; font-size: 12.5px; padding: 2px 0; }
+#spcrm-panel .spcrm-also-r > span:first-child { font-weight: 700; flex: 0 0 70px; }
+#spcrm-panel .spcrm-also-id { color: var(--g-muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Opening animation off when it opens tucked away. */
+#spcrm-panel.spcrm-tucked { animation: none; }

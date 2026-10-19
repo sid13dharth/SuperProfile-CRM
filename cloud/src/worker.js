@@ -1709,14 +1709,18 @@ async function handleApi(request, env, url) {
        duplicate would create two records for one person. */
   if (path === '/api/ext/set-email' && method === 'POST') {
     await extAuth();
-    const handle = normHandle(body.handle || '');
+    // YouTube/Skool leads are addressed by their stored key ("youtube:@name");
+    // Instagram by its bare handle, as before.
+    const extTarget = String(body.key || '').trim().toLowerCase();
+    const handle = extTarget.includes(':') ? extTarget : normHandle(body.handle || '');
     const email = normEmail(body.email || '');
     if (!handle) throw new ApiError(400, 'handle required');
     if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email)) throw new ApiError(400, 'That does not look like an email address');
-    const row = await env.DB.prepare('SELECT id, email_norm FROM entries WHERE handle_norm=?').bind(handle).first();
+    const row = await env.DB.prepare('SELECT id, email_norm, platform FROM entries WHERE handle_norm=?').bind(handle).first();
     if (!row) throw new ApiError(404, '@' + handle + ' is not in the CRM');
     if (row.email_norm) throw new ApiError(409, 'That lead already has an email (' + row.email_norm + ')');
-    const clash = await env.DB.prepare('SELECT handle_norm FROM entries WHERE email_norm=? AND id!=?').bind(email, row.id).first();
+    // Same email on another platform is allowed (that is "Also on"); within one platform it is not.
+    const clash = await env.DB.prepare('SELECT handle_norm FROM entries WHERE email_norm=? AND id!=? AND platform=?').bind(email, row.id, row.platform || IG).first();
     if (clash) throw new ApiError(409, 'That email already belongs to @' + clash.handle_norm);
     await env.DB.prepare('UPDATE entries SET email=?, email_norm=? WHERE id=?').bind(email, email, row.id).run();
     await bumpVersion(env);
@@ -1746,13 +1750,29 @@ async function handleApi(request, env, url) {
        if the key ever leaked. */
   if (path === '/api/ext/lead' && method === 'GET') {
     await extAuth();
-    const handle = normHandle(url.searchParams.get('handle') || '');
-    if (!handle) throw new ApiError(400, 'handle required');
-    const row = await env.DB.prepare('SELECT * FROM entries WHERE handle_norm=?').bind(handle).first();
-    const vids = await videosFor(handle);
+    const extPlat = String(url.searchParams.get('platform') || IG).toLowerCase();
+    let handle = '', row = null;
+    if (extPlat === IG) {
+      handle = normHandle(url.searchParams.get('handle') || '');
+      if (!handle) throw new ApiError(400, 'handle required');
+      row = await env.DB.prepare('SELECT * FROM entries WHERE handle_norm=?').bind(handle).first();
+    } else {
+      /* A YouTube page can name its channel two ways (@handle and channel/UC…)
+         and a lead may be stored under either, so the extension sends every
+         form it can see and the first that is a lead wins. Skool: the
+         community slug. */
+      const keys = [...new Set(url.searchParams.getAll('id').map(r => handleKey(extPlat, r, normHandle)).filter(Boolean).map(k => k.key))];
+      if (!keys.length) throw new ApiError(400, 'id required');
+      handle = keys[0];
+      const { results } = await env.DB.prepare(
+        `SELECT * FROM entries WHERE handle_norm IN (${keys.map(() => '?').join(',')})`).bind(...keys).all();
+      row = keys.map(k => results.find(r => r.handle_norm === k)).find(Boolean) || null;
+      if (row) handle = row.handle_norm;
+    }
+    const vids = extPlat === IG ? await videosFor(handle) : [];
     // Someone can have posted for us without ever being a lead row, so the
     // partner block is returned either way.
-    if (!row) return json({ found: false, handle, videos: vids });
+    if (!row) return json({ found: false, handle, platform: extPlat, profile: displayId(extPlat, handle), videos: vids });
     const e = entryDict(row, env.CRM_URL || '');
     // Breadcrumb: walk pipeline_nodes up from the lead's position. The table is
     // tiny, so one read and an in-memory walk beats a query per level.
@@ -1787,8 +1807,14 @@ async function handleApi(request, env, url) {
     // Fall back to the snapshot only where we hold no mail of our own.
     const contacted = !!sentAt || !!(e.crm && e.crm.contacted);
     const replied = !!gotAt || !!(e.crm && e.crm.replied);
+    // The same person on other platforms (same email) — "Also on" in the panel.
+    const alsoOn = row.email_norm ? (await env.DB.prepare(
+      'SELECT platform, handle_norm, stage, lead_manager FROM entries WHERE email_norm=? AND id!=? AND platform!=? ORDER BY platform')
+      .bind(row.email_norm, row.id, row.platform || IG).all()).results
+      .map(o => ({ platform: o.platform, profile: displayId(o.platform, o.handle_norm), key: o.handle_norm, stage: o.stage || '', lead_manager: o.lead_manager || '' })) : [];
     return json({
-      found: true, handle, id: row.id,
+      found: true, handle, id: row.id, key: row.handle_norm, platform: row.platform || IG, also_on: alsoOn,
+      profile: displayId(row.platform || IG, row.handle_norm), p_display: row.p_display || '', p_audience: row.p_audience,
       stage: e.stage, breadcrumb: crumb, position: row.position || '',
       status: e.status || '', label: e.label || '',
       first_name: e.first_name || '', email: e.email || '', category: e.category || '',

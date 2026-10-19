@@ -1801,15 +1801,24 @@ function renderTabs() {
    screen first, and the intent has to survive that instead of being dropped. */
 const deepLink = (() => {
   const q = new URLSearchParams(location.search);
+  // &platform=youtube|skool… comes from the extension on those sites. Then the
+  // value is the lead's stored key (or, for add, the page URL — kept as typed,
+  // because YouTube channel ids are case-sensitive).
+  const platform = (q.get('platform') || '').trim().toLowerCase();
   for (const kind of ['lead', 'conv', 'email', 'add', 'videos']) {
-    const v = (q.get(kind) || '').trim().toLowerCase().replace(/^@+/, '');
-    if (v) return { kind, handle: v };
+    const raw = (q.get(kind) || '').trim();
+    const v = platform && platform !== 'instagram' ? (kind === 'add' ? raw : raw.toLowerCase()) : raw.toLowerCase().replace(/^@+/, '');
+    if (v) return { kind, handle: v, platform: platform === 'instagram' ? '' : platform };
   }
   return null;
 })();
 
 async function runDeepLink() {
   const { kind, handle } = deepLink;
+  const plat = deepLink.platform || '';
+  // A YouTube/Skool lead lives in its own tab: go there first.
+  if (plat && plat !== state.platform) { state.platform = plat; renderPlatBar(); applyPlatformUi(); }
+  const who = plat ? handle.replace(/^[a-z0-9]+:(email:)?/, '') : '@' + handle;
   // One-shot: drop the query string so a refresh doesn't reopen the modal.
   history.replaceState({}, '', location.pathname);
 
@@ -1825,8 +1834,10 @@ async function runDeepLink() {
 
   if (kind === 'add') {
     await switchTab('leads');
+    prepareAddForm();
+    if (plat) { $('f-platform').value = plat; updateAddForm(); }
     $('add-bg').classList.add('open');
-    $('f-social').value = 'https://instagram.com/' + handle;
+    $('f-social').value = plat ? handle : 'https://instagram.com/' + handle;
     // Fire the live duplicate/CRM preview the form does as you type.
     $('f-social').dispatchEvent(new Event('input', { bubbles: true }));
     setTimeout(() => $('f-email').focus(), 60);
@@ -1838,13 +1849,13 @@ async function runDeepLink() {
   $('search').value = handle;
   await switchTab('all');
   const e = state.entries.find(x => String(x.handle || '').toLowerCase() === handle);
-  if (!e) { toast('@' + handle + ' is not in the CRM'); return; }
+  if (!e) { toast(who + ' is not in the CRM'); return; }
   /* The reply thread lives in the Unibox, and the Unibox looks a conversation
      up by email address, not by handle — so the translation happens here,
      where the CRM row that holds both is already in hand. The lead stays
      searched behind the frame, so closing the Unibox leaves you on them. */
   if (kind === 'conv') {
-    if (!e.email) { toast('@' + handle + ' has no email address, so there is no thread to open'); return; }
+    if (!e.email) { toast(who + ' has no email address, so there is no thread to open'); return; }
     switchView('unibox', '?lead=' + encodeURIComponent(e.email));
     return;
   }

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "SuperProfile CRM — Instagram lookup",
-  "version": "1.5.1",
-  "description": "Shows whether the Instagram profile you are viewing is a lead in the SuperProfile CRM, what stage they are at, and lets you add a missing email inline.",
+  "name": "SuperProfile CRM — lead lookup",
+  "version": "1.6.0",
+  "description": "On Instagram profiles, YouTube channels and videos, and Skool communities: shows whether this creator is a lead in the SuperProfile CRM, what stage they are at, and lets you add a missing email inline.",
   "permissions": [
     "storage",
     "cookies"
@@ -22,7 +22,11 @@
     {
       "matches": [
         "https://www.instagram.com/*",
-        "https://instagram.com/*"
+        "https://instagram.com/*",
+        "https://www.youtube.com/*",
+        "https://youtube.com/*",
+        "https://www.skool.com/*",
+        "https://skool.com/*"
       ],
       "js": [
         "content.js"

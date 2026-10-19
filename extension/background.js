@@ -1,4 +1,4 @@
-/* Background service worker.
+/* Background service worker (Instagram, YouTube and Skool pages).
 
    Every network call lives here, not in the content script, for two reasons:
    fetches from the service worker are exempt from CORS (the extension's
@@ -42,17 +42,23 @@ async function settings() {
   return { base: (s.base || DEFAULT_BASE).replace(/\/+$/, ''), key: s.key || '' };
 }
 
-async function lookup(handle) {
+/* Instagram: ?handle=. YouTube/Skool: ?platform=…&id=…&id=… — a YouTube
+   channel can be named several ways and the CRM tries each. */
+async function lookup(msg) {
   const now = Date.now();
-  const hit = cache.get(handle);
+  const ck = msg.cacheKey || msg.handle;
+  const hit = cache.get(ck);
   if (hit && now - hit.t < TTL_MS) return hit.v;
+  const qs = msg.platform && msg.platform !== 'instagram'
+    ? 'platform=' + encodeURIComponent(msg.platform) + (msg.ids || []).map(i => '&id=' + encodeURIComponent(i)).join('')
+    : 'handle=' + encodeURIComponent(msg.handle);
 
   const { base, headers } = await authHeaders();
   if (!headers) return { error: 'no_key' };
 
   let r;
   try {
-    r = await fetch(`${base}/api/ext/lead?handle=${encodeURIComponent(handle)}`, {
+    r = await fetch(`${base}/api/ext/lead?${qs}`, {
       headers: { ...headers, accept: 'application/json' },
     });
   } catch (e) {
@@ -64,11 +70,11 @@ async function lookup(handle) {
   let v;
   try { v = await r.json(); } catch { return { error: 'parse' }; }
   v.base = base;
-  cache.set(handle, { t: now, v });
+  cache.set(ck, { t: now, v });
   return v;
 }
 
-async function setEmail(handle, email) {
+async function setEmail(msg) {
   const { base, headers } = await authHeaders();
   if (!headers) return { error: 'no_key' };
   let r;
@@ -76,13 +82,13 @@ async function setEmail(handle, email) {
     r = await fetch(`${base}/api/ext/set-email`, {
       method: 'POST',
       headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ handle, email }),
+      body: JSON.stringify({ handle: msg.handle || '', key: msg.key || '', email: msg.email }),
     });
   } catch (e) { return { error: 'network', detail: String(e && e.message || e) }; }
   let v = {};
   try { v = await r.json(); } catch {}
   if (!r.ok) return { error: 'refused', detail: v.detail || ('HTTP ' + r.status) };
-  cache.delete(handle);            // the panel must re-read, not show a stale miss
+  cache.delete(msg.cacheKey || msg.handle);   // the panel must re-read, not show a stale miss
   return v;
 }
 
@@ -91,12 +97,12 @@ async function setEmail(handle, email) {
    can act on. Hence the .catch on both. */
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const fail = e => sendResponse({ error: 'worker', detail: String((e && e.message) || e) });
-  if (msg && msg.type === 'lookup' && msg.handle) {
-    lookup(msg.handle).then(sendResponse, fail);
+  if (msg && msg.type === 'lookup' && (msg.handle || (msg.ids && msg.ids.length))) {
+    lookup(msg).then(sendResponse, fail);
     return true;               // keep the channel open for the async reply
   }
-  if (msg && msg.type === 'setEmail' && msg.handle) {
-    setEmail(msg.handle, msg.email).then(sendResponse, fail);
+  if (msg && msg.type === 'setEmail' && (msg.handle || msg.key)) {
+    setEmail(msg).then(sendResponse, fail);
     return true;
   }
 });

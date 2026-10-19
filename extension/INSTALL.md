@@ -1,7 +1,8 @@
-# SuperProfile CRM — Instagram lookup
+# SuperProfile CRM — lead lookup (Instagram, YouTube, Skool)
 
-Open any Instagram profile and a panel tells you whether that handle is a lead
-in our CRM, what stage they're at, who owns them, and their Instagram numbers.
+Open an Instagram profile, a YouTube channel or video, or a Skool community or
+member profile, and a glass panel tells you whether that creator is a lead in our
+CRM, what stage they're at and who owns them.
 You can also add a missing email without leaving the page.
 
 **Chrome or Edge on desktop.** About a minute.
@@ -22,7 +23,7 @@ the extension stops working.
 3. Click **Load unpacked** (top left)
 4. Pick the folder you unzipped — the one containing `manifest.json`
 
-You should see **SuperProfile CRM — Instagram lookup, version 1.5.1**.
+You should see **SuperProfile CRM — lead lookup, version 1.6.0**.
 
 ### Already have an older version?
 
@@ -32,7 +33,7 @@ disk, and nothing fetches a new copy. Replace the files first:
 1. Unzip the new download
 2. Copy the files **into the folder you loaded before**, replacing all of them
 3. `chrome://extensions` → click the **circular arrow** ↻ on the card
-4. Reload your Instagram tab (Ctrl+R)
+4. Reload your Instagram / YouTube / Skool tab (Ctrl+R)
 
 If you unzip somewhere new instead, **Remove** the old card and **Load
 unpacked** the new folder — the old entry still points at the old files.
@@ -50,7 +51,9 @@ no key to paste and anything you change is recorded as you.
 
 ## 4. Try it
 
-Open any `instagram.com/<someone>`. The panel appears top right.
+Open any `instagram.com/<someone>`, `youtube.com/@channel` (or one of their
+videos), or `skool.com/<community>` / `skool.com/@person`. The panel appears top
+right. On a Skool member's profile it shows the community they own.
 
 | Left edge | Meaning |
 |---|---|
@@ -81,13 +84,13 @@ The **×** hides the panel until the next profile.
 ## If it doesn't work
 
 **"Log in to the CRM in this browser"** — you're signed out. Open the CRM link
-above, sign in, then reload the Instagram tab.
+above, sign in, then reload the tab.
 
-**Panel doesn't appear at all** — reload the Instagram tab (Ctrl+R). Content
+**Panel doesn't appear at all** — reload the tab (Ctrl+R). Content
 scripts only attach when a page loads.
 
 **You updated it and nothing changed** — on `chrome://extensions` click the
-circular arrow on the card, *then* reload the Instagram tab. The version shown
+circular arrow on the card, *then* reload the tab. The version shown
 in the panel header tells you which build you're on.
 
 **Panel stuck on "Checking @someone…", or it says the background worker did
@@ -113,4 +116,4 @@ It reads lead data, and the only thing it writes is an email address on a lead
 that doesn't have one. It cannot change stage, owner, manager, or delete
 anything.
 
-It runs only on `instagram.com` and talks only to our CRM worker.
+It runs only on `instagram.com`, `youtube.com` and `skool.com`, and talks only to our CRM worker.

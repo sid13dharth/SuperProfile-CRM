@@ -1,4 +1,4 @@
-# SuperProfile CRM — Instagram lookup (Chrome extension)
+# SuperProfile CRM — lead lookup (Chrome extension)
 
 Open any Instagram profile and a panel shows whether that handle is a lead in the
 CRM, what stage they are at, who owns them, and their Instagram numbers.
@@ -59,4 +59,4 @@ re-pastes the new key in the extension options.
   only reads; revisit if write actions are ever added.
 - Unpacked extensions make Chrome show a "disable developer mode extensions"
   prompt on restart. An unlisted Chrome Web Store listing removes that.
-- Only matches Instagram. Other networks would need their own URL parsing.
+- Instagram, YouTube and Skool only. Another network needs its own page parsing in `content.js` (`subject()`).
