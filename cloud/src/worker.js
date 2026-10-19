@@ -20,6 +20,7 @@ import {
   runFullSync, runManualSync, ensureDefaultWorkspace, listWorkspaces, wsKey,
   recomputeConversations, linkConversations, emailUpsertStmt, instantlyPost, instantlyGet,
   runRateExtraction, runBodyBackfill, runReplyReconcile, fetchLeadEmails, USD_PER, AUTO_POC_NAMES,
+  syncEntriesFromConversations,
 } from './sync.js';
 import { enrichRows, IG_STEP_LEADS } from './hiker.js';
 import {
@@ -637,6 +638,37 @@ function gridShared(env) {
   // A failed fetch must not be cached for a minute.
   promise.catch(() => { if (gridSharedCache && gridSharedCache.promise === promise) gridSharedCache = null; });
   return promise;
+}
+
+/* Same person, two rows on one platform: a lead with its link but no email,
+   and an email-only placeholder (created from a reply, or imported from a
+   sheet that had a video link instead of a channel). Adding the email to the
+   linked lead folds the placeholder into it: conversations and videos move
+   over, blanks are filled from it, and the empty duplicate goes. Only ever an
+   email-keyed row with no link is absorbed. */
+async function absorbPlaceholder(env, targetId, ph) {
+  const t = await env.DB.prepare('SELECT * FROM entries WHERE id=?').bind(targetId).first();
+  if (!t || !ph || ph.id === t.id || ph.platform !== t.platform || !String(ph.handle_norm || '').includes(':email:')) return false;
+  const KEEP = new Set(['id', 'handle_norm', 'handle_raw', 'social_url', 'platform', 'created_at', 'source', 'email', 'email_norm', 'notes']);
+  const upd = new Map();   // column → value, each set once
+  for (const [k, v] of Object.entries(ph)) {
+    if (KEEP.has(k) || v === null || v === '' || v === 0) continue;
+    if (t[k] === null || t[k] === '' || t[k] === 0) upd.set(k, v);
+  }
+  // A reply already moved the placeholder along the pipeline: keep that progress.
+  if ((t.stage || 'Leads') === 'Leads' && ph.stage && ph.stage !== 'Leads') {
+    upd.set('stage', ph.stage); upd.set('position', ph.position || ''); upd.set('position_source', ph.position_source || '');
+  }
+  const notes = [t.notes, ph.notes].map(x => String(x || '').trim()).filter(Boolean);
+  if (notes.length > 1 && notes[0] !== notes[1]) upd.set('notes', notes.join(' · '));
+  const stmts = [
+    env.DB.prepare('UPDATE conversations SET entry_id=? WHERE entry_id=?').bind(t.id, ph.id),
+    env.DB.prepare('UPDATE videos SET entry_id=? WHERE entry_id=?').bind(t.id, ph.id),
+    env.DB.prepare('DELETE FROM entries WHERE id=?').bind(ph.id),
+  ];
+  if (upd.size) stmts.push(env.DB.prepare('UPDATE entries SET ' + [...upd.keys()].map(k => k + '=?').join(', ') + ' WHERE id=?').bind(...upd.values(), t.id));
+  await env.DB.batch(stmts);
+  return true;
 }
 
 function entryDict(row, crmUrl) {
@@ -1780,11 +1812,15 @@ async function handleApi(request, env, url) {
     if (!row) throw new ApiError(404, '@' + handle + ' is not in the CRM');
     if (row.email_norm) throw new ApiError(409, 'That lead already has an email (' + row.email_norm + ')');
     // Same email on another platform is allowed (that is "Also on"); within one platform it is not.
-    const clash = await env.DB.prepare('SELECT handle_norm FROM entries WHERE email_norm=? AND id!=? AND platform=?').bind(email, row.id, row.platform || IG).first();
-    if (clash) throw new ApiError(409, 'That email already belongs to @' + clash.handle_norm);
+    const clash = await env.DB.prepare('SELECT * FROM entries WHERE email_norm=? AND id!=? AND platform=?').bind(email, row.id, row.platform || IG).first();
+    // An email-only placeholder for this same person is merged in, not a conflict.
+    let merged = false;
+    if (clash && String(clash.handle_norm || '').includes(':email:')) merged = await absorbPlaceholder(env, row.id, clash);
+    else if (clash) throw new ApiError(409, 'That email already belongs to ' + (displayId(clash.platform || IG, clash.handle_norm) || clash.handle_norm));
     await env.DB.prepare('UPDATE entries SET email=?, email_norm=? WHERE id=?').bind(email, email, row.id).run();
+    if (merged) await syncEntriesFromConversations(env, [row.id]);
     await bumpVersion(env);
-    return json({ ok: true, handle, email });
+    return json({ ok: true, handle, email, merged });
   }
 
   /* Videos a handle has posted for us, newest first. Drives the extension's
