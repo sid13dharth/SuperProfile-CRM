@@ -2920,4 +2920,12 @@ function wire() {
 }
 
 wire();
-boot().catch(e => { $('login-error').textContent = e.message; $('login-view').style.display = 'flex'; });
+/* A failed start-up (dropped connection, server briefly out of memory) is
+   retried a few times before the sign-in card shows the error. */
+(function start(attempt) {
+  boot().catch(e => {
+    if (attempt < 3) { setTimeout(() => start(attempt + 1), 1200 * (attempt + 1)); return; }
+    $('login-error').textContent = 'Could not reach the CRM — ' + e.message + '. Reload to try again.';
+    $('login-view').style.display = 'flex';
+  });
+})(0);

@@ -2014,5 +2014,27 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
-  init();
+  startUnibox();
 });
+
+/* Start-up must never leave a blank page. If the first requests fail (a
+   dropped connection, or the server briefly out of memory), try again a few
+   times, then say so with a Retry button instead of showing nothing. */
+async function startUnibox(attempt = 0) {
+  try { await init(); }
+  catch (e) {
+    if (attempt < 3) { setTimeout(() => startUnibox(attempt + 1), 1200 * (attempt + 1)); return; }
+    let box = document.getElementById('boot-fail');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'boot-fail';
+      box.style.cssText = 'position:fixed;inset:0;display:grid;place-items:center;z-index:200;font:14px -apple-system,Segoe UI,sans-serif;';
+      box.innerHTML = '<div style="background:var(--bg2,#fff);color:var(--text,#111);padding:22px 26px;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.18);max-width:360px;text-align:center">'
+        + '<b>Couldn’t load the Unibox</b><div style="color:var(--muted,#666);margin:8px 0 14px;font-size:13px" id="boot-fail-msg"></div>'
+        + '<button style="background:var(--accent,#007aff);color:#fff;border:0;border-radius:8px;padding:7px 18px;font-weight:600;cursor:pointer">Retry</button></div>';
+      document.body.appendChild(box);
+      box.querySelector('button').onclick = () => location.reload();
+    }
+    document.getElementById('boot-fail-msg').textContent = e && e.message ? e.message : 'The server did not answer.';
+  }
+}

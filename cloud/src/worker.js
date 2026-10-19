@@ -1649,9 +1649,7 @@ async function handleApi(request, env, url) {
     // The client loads the full filtered set into the grid, so allow a large
     // page. Still bounded so a pathological caller can't ask for unbounded rows.
     const limit = Math.min(parseInt(p.get('limit') || '1000', 10) || 1000, 100000);
-    sql += ' LIMIT ' + limit;
-    const [{ results }, ownersRes, ctryRes, statusRes, labelRes, totalRes, filteredRes] = await Promise.all([
-      env.DB.prepare(sql).bind(...args).all(),
+    const [ownersRes, ctryRes, statusRes, labelRes, totalRes, filteredRes] = await Promise.all([
       env.DB.prepare("SELECT DISTINCT lead_owner FROM entries WHERE lead_owner != '' ORDER BY lead_owner").all(),
       env.DB.prepare("SELECT country, COUNT(*) n FROM entries WHERE country != ''"
         + " GROUP BY country ORDER BY n DESC, country").all(),
@@ -1670,13 +1668,7 @@ async function handleApi(request, env, url) {
     // Handles that have posted for us, so the grid can badge them.
     const { results: pv } = await env.DB.prepare("SELECT DISTINCT handle FROM videos WHERE handle != ''").all();
     const partners = new Set(pv.map(r => r.handle));
-    return json({
-      entries: results.map(r => ({
-        ...entryDict(r, crmUrl),
-        partner: partners.has(r.handle_norm),
-        // The other platforms this email is a lead on — the "Also on" column.
-        also_on: (cross.get(r.email_norm) || []).filter(x => x !== (r.platform || IG)),
-      })),
+    const head = {
       platform_counts: Object.fromEntries(platCounts.map(r => [r.platform, r.n])),
       owners: ownersRes.results.map(o => o.lead_owner),
       countries: ctryRes.results.map(r => ({ name: r.country, n: r.n })),
@@ -1684,11 +1676,51 @@ async function handleApi(request, env, url) {
       statuses: statusRes.results.map(o => ({ key: o.key, label: o.label })),
       labels: labelRes.results.map(o => o.name),
       version: parseInt(await metaGet(env, 'version', '0'), 10),
-      total: results.length,
-      grand_total: totalRes ? totalRes.n : results.length,
+      grand_total: totalRes ? totalRes.n : 0,
       // Exact count matching the current filter (drives the "X of N" header).
-      filtered_total: filteredRes ? filteredRes.n : results.length,
+      filtered_total: filteredRes ? filteredRes.n : 0,
+    };
+    /* Streamed. The grid asks for the whole filtered set — ~25k Instagram rows,
+       ~43 MB of JSON — and building that in one go held the rows, a dict per
+       row and the whole string (twice that in memory) together, past the
+       128 MB a Worker gets: the request died with exceededMemory and took every
+       other request in that isolate with it (a blank CRM when /api/me was one).
+       Still ONE query (paging with OFFSET would re-sort the set per page and
+       multiply D1 reads), but each row is turned into JSON a slice at a time
+       and dropped as soon as it is sent. Same JSON shape as before. */
+    const { results } = await env.DB.prepare(sql + ' LIMIT ' + limit).bind(...args).all();
+    const SLICE = 1000;
+    const enc = new TextEncoder();
+    let i = 0, opened = false;
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (!opened) {
+          opened = true;
+          const h = JSON.stringify(head);
+          controller.enqueue(enc.encode(h.slice(0, -1) + ',"entries":['));
+          return;
+        }
+        let out = '';
+        const end = Math.min(i + SLICE, results.length);
+        for (; i < end; i++) {
+          const r = results[i];
+          results[i] = null;   // let it go as soon as it is serialised
+          out += (i ? ',' : '') + JSON.stringify({
+            ...entryDict(r, crmUrl),
+            partner: partners.has(r.handle_norm),
+            // The other platforms this email is a lead on — the "Also on" column.
+            also_on: (cross.get(r.email_norm) || []).filter(x => x !== (r.platform || IG)),
+          });
+        }
+        if (i >= results.length) {
+          controller.enqueue(enc.encode(out + '],"total":' + results.length + '}'));
+          controller.close();
+          return;
+        }
+        controller.enqueue(enc.encode(out));
+      },
     });
+    return new Response(stream, { headers: { 'Content-Type': 'application/json' } });
   }
 
   /* Extension auth: prefer the caller's own CRM session, fall back to the
