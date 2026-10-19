@@ -607,6 +607,38 @@ async function crossPlatformEmails(env) {
   return new Map(results.map(r => [r.email_norm, String(r.plats || '').split(',')]));
 }
 
+/* What every grid load needs beyond its own rows — owners, countries,
+   platform counts, the total, who is on several platforms, who has posted for
+   us. Each is a full scan of entries (~25k rows), and the grid reloads a lot,
+   so they are kept for a minute per isolate. Concurrent loads share one fetch. */
+let gridSharedCache = null;   // { at, promise }
+function gridShared(env) {
+  const now = Date.now();
+  if (gridSharedCache && now - gridSharedCache.at < 60000) return gridSharedCache.promise;
+  const promise = (async () => {
+    const [ownersRes, ctryRes, platRes, totalRes, pvRes] = await env.DB.batch([
+      env.DB.prepare("SELECT DISTINCT lead_owner FROM entries WHERE lead_owner != '' ORDER BY lead_owner"),
+      env.DB.prepare("SELECT country, COUNT(*) n FROM entries WHERE country != '' GROUP BY country ORDER BY n DESC, country"),
+      env.DB.prepare('SELECT platform, COUNT(*) n FROM entries GROUP BY platform'),
+      env.DB.prepare('SELECT COUNT(*) n FROM entries'),
+      // Handles that have posted for us, so the grid can badge them.
+      env.DB.prepare("SELECT DISTINCT handle FROM videos WHERE handle != ''"),
+    ]);
+    return {
+      owners: ownersRes.results.map(o => o.lead_owner),
+      countries: ctryRes.results.map(r => ({ name: r.country, n: r.n })),
+      platform_counts: Object.fromEntries(platRes.results.map(r => [r.platform, r.n])),
+      grand_total: totalRes.results[0] ? totalRes.results[0].n : 0,
+      partners: new Set(pvRes.results.map(r => r.handle)),
+      cross: await crossPlatformEmails(env),
+    };
+  })();
+  gridSharedCache = { at: now, promise };
+  // A failed fetch must not be cached for a minute.
+  promise.catch(() => { if (gridSharedCache && gridSharedCache.promise === promise) gridSharedCache = null; });
+  return promise;
+}
+
 function entryDict(row, crmUrl) {
   let campaigns = [];
   try { campaigns = JSON.parse(row.crm_campaigns || '[]'); } catch { campaigns = []; }
@@ -1649,34 +1681,30 @@ async function handleApi(request, env, url) {
     // The client loads the full filtered set into the grid, so allow a large
     // page. Still bounded so a pathological caller can't ask for unbounded rows.
     const limit = Math.min(parseInt(p.get('limit') || '1000', 10) || 1000, 100000);
-    const [ownersRes, ctryRes, statusRes, labelRes, totalRes, filteredRes] = await Promise.all([
-      env.DB.prepare("SELECT DISTINCT lead_owner FROM entries WHERE lead_owner != '' ORDER BY lead_owner").all(),
-      env.DB.prepare("SELECT country, COUNT(*) n FROM entries WHERE country != ''"
-        + " GROUP BY country ORDER BY n DESC, country").all(),
+    /* The dropdown vocabularies and counts each scan the whole table, and the
+       grid reloads often, so they are shared for a minute per isolate. A new
+       owner or country shows up in its filter within that minute. */
+    const shared = await gridShared(env);
+    const [statusRes, labelRes, filteredRes] = await Promise.all([
       // Status dropdown = the editable statuses vocabulary ({key,label}).
       env.DB.prepare('SELECT key, label FROM statuses ORDER BY sort, label').all(),
       // Label dropdown = the editable crm_labels vocabulary (seeded from the
       // values in use; managed via the Unibox). Kept as a tiny indexed read so
       // /api/entries doesn't full-scan entries on every load.
       env.DB.prepare('SELECT name FROM crm_labels ORDER BY sort, name').all(),
-      env.DB.prepare('SELECT COUNT(*) n FROM entries').first(),
       env.DB.prepare(countSql).bind(...args).first(),
     ]);
-    const { results: platCounts } = await env.DB.prepare('SELECT platform, COUNT(*) n FROM entries GROUP BY platform').all();
-    const cross = await crossPlatformEmails(env);
+    const { cross, partners } = shared;
     const crmUrl = env.CRM_URL || '';
-    // Handles that have posted for us, so the grid can badge them.
-    const { results: pv } = await env.DB.prepare("SELECT DISTINCT handle FROM videos WHERE handle != ''").all();
-    const partners = new Set(pv.map(r => r.handle));
     const head = {
-      platform_counts: Object.fromEntries(platCounts.map(r => [r.platform, r.n])),
-      owners: ownersRes.results.map(o => o.lead_owner),
-      countries: ctryRes.results.map(r => ({ name: r.country, n: r.n })),
+      platform_counts: shared.platform_counts,
+      owners: shared.owners,
+      countries: shared.countries,
       // {key,label} pairs — the grid shows label, filters/saves by key.
       statuses: statusRes.results.map(o => ({ key: o.key, label: o.label })),
       labels: labelRes.results.map(o => o.name),
       version: parseInt(await metaGet(env, 'version', '0'), 10),
-      grand_total: totalRes ? totalRes.n : 0,
+      grand_total: shared.grand_total,
       // Exact count matching the current filter (drives the "X of N" header).
       filtered_total: filteredRes ? filteredRes.n : 0,
     };

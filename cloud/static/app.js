@@ -2255,14 +2255,27 @@ async function refreshCrm() {
 
 /* ── real-time polling (dedup set is always current) ───────── */
 let pollTimer;
+/* Pick up changes made elsewhere (teammates, the per-minute sync). A full
+   reload is the whole lead list, so: never from a tab nobody is looking at
+   (it catches up the moment it is shown again), and at most once a minute
+   from one that is. Background tabs reloading every minute were most of the
+   database's load. */
+let lastAutoReload = 0;
+async function pollOnce() {
+  if (document.hidden || state.tab === 'videos' || state.tab === 'partners') return;
+  if (Date.now() - lastAutoReload < 60000) return;
+  try {
+    const v = await api('/api/version');
+    if (v.version !== state.version) { lastAutoReload = Date.now(); await loadEntries(); }
+  } catch { /* offline blip — try again next tick */ }
+}
 function startPolling() {
   clearInterval(pollTimer);
-  pollTimer = setInterval(async () => {
-    try {
-      const v = await api('/api/version');
-      if (v.version !== state.version) await loadEntries();
-    } catch { /* offline blip — try again next tick */ }
-  }, 12000);
+  pollTimer = setInterval(pollOnce, 15000);
+  if (!startPolling.wired) {
+    startPolling.wired = true;
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { lastAutoReload = 0; pollOnce(); } });
+  }
 }
 
 /* ── master list upload ────────────────────────────────────── */
