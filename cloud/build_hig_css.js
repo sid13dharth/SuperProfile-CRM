@@ -45,6 +45,7 @@ const ICONS = {
   inbox: '<rect x="3.5" y="4" width="17" height="16" rx="2.5"/><path d="M3.5 10h17"/>',
   dot: '<circle cx="12" cy="12" r="5" fill="black" stroke="none"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  puzzle: '<path d="M10 4a2 2 0 1 1 4 0v2h4v4h-2a2 2 0 1 0 0 4h2v4h-4v-2a2 2 0 1 0-4 0v2H6v-4h2a2 2 0 1 0 0-4H6V6h4z"/>',
   stop: '<rect x="5" y="5" width="14" height="14" rx="3"/>',
 };
 const icon = k => `url("data:image/svg+xml,${encodeURIComponent(
@@ -222,6 +223,7 @@ body.has-sidebar #unibox-frame { left: 0 !important; width: 100vw !important; }
 #activity-btn { --ic: ${icon('activity')}; }   #ig-btn { --ic: ${icon('camera')}; }
 #refresh-crm-btn { --ic: ${icon('refresh')}; } #master-btn { --ic: ${icon('list')}; }
 #team-btn { --ic: ${icon('team')}; }
+#ext-dl { --ic: ${icon('puzzle')}; text-decoration: none; }
 
 /* Platforms: a list in the sidebar; names keep their brand colour as text. */
 .gside .plat-bar { display: flex; flex-direction: column; gap: 1px; padding: 0; background: none; border: 0; overflow: visible; flex: none; }

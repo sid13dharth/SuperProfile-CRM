@@ -9,7 +9,11 @@ You can also add a missing email without leaving the page.
 
 ---
 
-## 1. Unzip
+## 1. Download and unzip
+
+In the CRM sidebar click **Chrome extension** — it always downloads the latest
+version.
+
 
 Unzip somewhere **permanent** — Documents is fine, Downloads is not.
 
@@ -23,14 +27,14 @@ the extension stops working.
 3. Click **Load unpacked** (top left)
 4. Pick the folder you unzipped — the one containing `manifest.json`
 
-You should see **SuperProfile CRM — lead lookup, version 1.6.0**.
+You should see **SuperProfile CRM — lead lookup** with the latest version.
 
 ### Already have an older version?
 
 Reloading on its own will **not** update you — Chrome reads the folder on your
 disk, and nothing fetches a new copy. Replace the files first:
 
-1. Unzip the new download
+1. In the CRM sidebar click **Chrome extension** and unzip the download
 2. Copy the files **into the folder you loaded before**, replacing all of them
 3. `chrome://extensions` → click the **circular arrow** ↻ on the card
 4. Reload your Instagram / YouTube / Skool tab (Ctrl+R)
@@ -38,7 +42,8 @@ disk, and nothing fetches a new copy. Replace the files first:
 If you unzip somewhere new instead, **Remove** the old card and **Load
 unpacked** the new folder — the old entry still points at the old files.
 
-Check the version in the panel header. It must say **v1.5.1**.
+Check the version in the panel header. From 1.6.1 on, the panel itself tells you
+when a newer version is out, with a download link.
 
 ## 3. Log into the CRM
 
@@ -57,9 +62,10 @@ right. On a Skool member's profile it shows the community they own.
 
 | Left edge | Meaning |
 |---|---|
-| Green | In the CRM |
-| Grey | Not a lead yet |
-| Amber | Something's wrong — usually you're signed out |
+| Red | Already a lead |
+| Yellow | A lead, but no email yet |
+| Green | New — not in the CRM |
+| Grey | Something's wrong — usually you're signed out |
 
 The panel shows their stage, **Added by** (who sourced the lead), **Lead Owner**
 (the teammate who owns it), email, when we last contacted them and when they
@@ -77,7 +83,12 @@ Buttons change with the lead:
 - **+ Add email** — in the CRM but no email on file; type it into the panel
 - **Open videos in CRM** — a partner; opens the Videos tab filtered to them
 
-The **×** hides the panel until the next profile.
+The **›** slides the panel off to the right edge; click the small tab there to
+bring it back (it stays tucked away across pages until you do). The **×** closes
+it for this page only.
+
+If the same person is a lead on another platform (same email), the panel lists
+it under **Also a lead on**.
 
 ---
 

@@ -221,9 +221,19 @@ function crmLink(base, kind, subj, d) {
   return `${base}/?${kind}=${encodeURIComponent(v)}&platform=${subj.platform}`;
 }
 
+// Shown above everything when a newer build is published in the CRM.
+function updateBanner(d) {
+  const u = d && d.update;
+  if (!u || !/^https?:\/\//i.test(u.zip || '')) return '';
+  return '<div class="spcrm-update"><b>New version ' + esc(u.version) + ' is out.</b> '
+    + '<a href="' + esc(u.zip) + '" target="_blank" rel="noopener">Download</a>, unzip it over your extension folder, '
+    + 'then press ↻ on the extension at chrome://extensions.</div>';
+}
+
 function render(subj, d) {
   const el = ensurePanel();
   const body = el.querySelector('.spcrm-body');
+  const banner = updateBanner(d);
   el.classList.remove('spcrm-exists', 'spcrm-noemail', 'spcrm-new', 'spcrm-warn');
 
   if (d && d.error) {
@@ -234,7 +244,7 @@ function render(subj, d) {
       : d.error === 'bad_key' ? 'The API key was rejected. Check it in the extension options.'
       : d.error === 'network' ? 'Could not reach the CRM.'
       : 'Lookup failed' + (d.detail ? ` — ${esc(d.detail)}` : '');
-    setHTML(body, `<div class="spcrm-msg">${esc(msg)}</div>`);
+    setHTML(body, banner + `<div class="spcrm-msg">${esc(msg)}</div>`);
     return;
   }
   const base = esc((d && d.base) || '');
@@ -242,13 +252,13 @@ function render(subj, d) {
     el.classList.add('spcrm-new'); applyTuck();
     if (subj.member) {
       // A Skool member: none of the communities they own is a lead.
-      setHTML(body, `<div class="spcrm-msg"><b>${esc(subj.label)}</b> `
+      setHTML(body, banner + `<div class="spcrm-msg"><b>${esc(subj.label)}</b> `
         + (subj.ids.length ? (subj.ids.length === 1 ? 'owns a community that is not in the CRM.' : `owns ${subj.ids.length} communities, none of them in the CRM.`)
                            : 'does not own a Skool community, so there is nothing to match in the CRM.') + '</div>'
         + (subj.ids.length === 1 ? `<a class="spcrm-btn" href="${esc(crmLink(d && d.base || '', 'add', { ...subj, ids: subj.ids }, d || {}))}" target="_blank" rel="noopener">+ Add their community</a>` : ''));
       return;
     }
-    setHTML(body, `<div class="spcrm-msg"><b>${esc(subj.label)}</b> is not in the CRM.</div>`
+    setHTML(body, banner + `<div class="spcrm-msg"><b>${esc(subj.label)}</b> is not in the CRM.</div>`
       + `<a class="spcrm-btn" href="${esc(crmLink(d && d.base || '', 'add', subj, d || {}))}" target="_blank" rel="noopener">+ Add lead</a>`);
     return;
   }
@@ -306,7 +316,7 @@ function render(subj, d) {
     parts.push(`<div class="spcrm-state">${d.contacted ? 'Contacted but never replied' : 'Never contacted'}</div>`
       + `<a class="spcrm-btn" href="${esc(crmLink(d.base || '', 'lead', subj, d))}" target="_blank" rel="noopener">Open in CRM →</a>`);
   }
-  setHTML(body, parts.join(''));
+  setHTML(body, banner + parts.join(''));
   wireAddEmail(body, subj, d);
 }
 

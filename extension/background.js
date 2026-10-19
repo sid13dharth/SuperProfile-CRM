@@ -44,6 +44,24 @@ async function settings() {
 
 /* Instagram: ?handle=. YouTube/Skool: ?platform=…&id=…&id=… — a YouTube
    channel can be named several ways and the CRM tries each. */
+/* Is a newer build published? The CRM serves /downloads/extension.json next to
+   the zip; checked at most hourly. Unpacked extensions never update on their
+   own, so this is how people find out. */
+let updateInfo = null, updateCheckedAt = 0;
+const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+async function checkUpdate(base) {
+  if (Date.now() - updateCheckedAt < 3600_000) return updateInfo;
+  updateCheckedAt = Date.now();
+  try {
+    const r = await fetch(base + '/downloads/extension.json', { cache: 'no-store' });
+    const j = r.ok ? await r.json() : null;
+    const mine = chrome.runtime.getManifest().version;
+    updateInfo = j && newer(j.version, mine) ? { version: j.version, zip: base + j.zip, guide: base + (j.guide || '') } : null;
+  } catch (e) { /* offline or not published: say nothing */ }
+  return updateInfo;
+}
+
 async function lookup(msg) {
   const now = Date.now();
   const ck = msg.cacheKey || msg.handle;
@@ -70,6 +88,7 @@ async function lookup(msg) {
   let v;
   try { v = await r.json(); } catch { return { error: 'parse' }; }
   v.base = base;
+  v.update = await checkUpdate(base);
   cache.set(ck, { t: now, v });
   return v;
 }
