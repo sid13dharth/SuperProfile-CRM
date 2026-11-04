@@ -20,7 +20,7 @@ import {
   runFullSync, runManualSync, ensureDefaultWorkspace, listWorkspaces, wsKey,
   recomputeConversations, linkConversations, emailUpsertStmt, instantlyPost, instantlyGet,
   runRateExtraction, runBodyBackfill, runReplyReconcile, fetchLeadEmails, USD_PER, AUTO_POC_NAMES,
-  syncEntriesFromConversations,
+  syncEntriesFromConversations, syncInstantlyLeads,
 } from './sync.js';
 import { enrichRows, IG_STEP_LEADS } from './hiker.js';
 import {
@@ -617,16 +617,19 @@ function gridShared(env) {
   const now = Date.now();
   if (gridSharedCache && now - gridSharedCache.at < 60000) return gridSharedCache.promise;
   const promise = (async () => {
-    const [ownersRes, ctryRes, platRes, totalRes, pvRes] = await env.DB.batch([
+    const [ownersRes, ctryRes, platRes, totalRes, pvRes, campRes] = await env.DB.batch([
       env.DB.prepare("SELECT DISTINCT lead_owner FROM entries WHERE lead_owner != '' ORDER BY lead_owner"),
       env.DB.prepare("SELECT country, COUNT(*) n FROM entries WHERE country != '' GROUP BY country ORDER BY n DESC, country"),
       env.DB.prepare('SELECT platform, COUNT(*) n FROM entries GROUP BY platform'),
       env.DB.prepare('SELECT COUNT(*) n FROM entries'),
       // Handles that have posted for us, so the grid can badge them.
       env.DB.prepare("SELECT DISTINCT handle FROM videos WHERE handle != ''"),
+      // Campaign dropdown: every synced campaign, with its workspace's name.
+      env.DB.prepare('SELECT c.id, c.name, c.status, c.ws, w.name ws_name FROM campaigns c LEFT JOIN workspaces w ON w.id = c.ws ORDER BY c.name'),
     ]);
     return {
       owners: ownersRes.results.map(o => o.lead_owner),
+      campaigns: campRes.results,
       countries: ctryRes.results.map(r => ({ name: r.country, n: r.n })),
       platform_counts: Object.fromEntries(platRes.results.map(r => [r.platform, r.n])),
       grand_total: totalRes.results[0] ? totalRes.results[0].n : 0,
@@ -685,8 +688,15 @@ function entryDict(row, crmUrl) {
     last_reply_at: row.crm_last_reply_at || '',
     checked_at: row.crm_checked_at || '',
   };
+  /* Outreach tag, same definitions as the Outreach filter (outreachSql).
+     il_in / replied_any come with the grid query; elsewhere the stored flags
+     stand in. */
+  const outreach = (row.crm_replied || row.replied_any) ? 'responded'
+    : !row.email_norm ? 'no_email'
+    : (row.crm_contacted || row.il_in) ? 'no_reply' : 'never';
   return {
     id: row.id,
+    outreach,
     handle: row.handle_norm,
     handle_raw: row.handle_raw,
     social_url: row.social_url,
@@ -886,6 +896,206 @@ async function pushEntryToConversation(env, entryId, body) {
 
 /* ── API ───────────────────────────────────────────────────── */
 
+/* Which messages on a thread belong to OUR conversation with the lead, and
+   which one a reply should answer.
+
+   Instantly files every message that shares the thread under the lead — and on
+   2–3 Oct 2026 five of our mailboxes were used to send phishing ("Invoice
+   Payment", "Documents Require Your Signature") inside real lead threads.
+   Strangers' replies to that phishing then sat in the lead's thread as the
+   newest inbound message, and the Unibox answered THEM: Nikola's thread twice
+   replied to a retired cheese-factory employee in Finland.
+
+   A message is ours-with-the-lead when it is from or to the lead, or carries
+   one of the conversation's own subjects (our campaign subjects, and whatever
+   the lead themselves wrote under) — that keeps a manager who replies on the
+   lead's behalf ("Re: Partnership - Jaro X SuperProfile") reachable. A blank
+   subject is not evidence either way and is not flagged. Our own team
+   (superprofile*, cosmofeed.com) is never a reply target: answering a teammate's
+   message would send the reply to the teammate. */
+const normSubj = s => {
+  let x = String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  for (let prev = null; prev !== x;) { prev = x; x = x.replace(/^(re|fwd?|fw|aw|sv|automatic reply|auto ?reply)\s*:\s*/, ''); }
+  return x;
+};
+const isInternalAddr = a => { const d = String(a || '').toLowerCase().split('@')[1] || ''; return d.includes('superprofile') || d === 'cosmofeed.com'; };
+function threadTriage(msgs, leadEmail) {
+  const lead = String(leadEmail || '').toLowerCase();
+  /* Their colleagues count as them (eliott@ and samuel@ answering for info@
+     dolfincontent.com) — unless the domain is a free mailbox anyone can have. */
+  const dom = lead.split('@')[1] || '';
+  const orgDom = /^(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|icloud|me|mac|aol|proton|protonmail|gmx|mail|zoho|yandex|web|wp|o2|onet|interia|libero|orange|free)\./.test(dom) ? '' : dom;
+  const fromLead = m => { const f = String(m.from_email || '').toLowerCase(); return f.includes(lead) || (orgDom && f.endsWith('@' + orgDom)); };
+  const toLead = m => { const t = String(m.to_email || '').toLowerCase(); return t.includes(lead) || (orgDom && t.includes('@' + orgDom)); };
+  const campSubj = new Set(msgs.filter(m => m.ue_type === 1).map(m => normSubj(m.subject)).filter(Boolean));
+  const convSubj = new Set([...campSubj, ...msgs.filter(fromLead).map(m => normSubj(m.subject)).filter(Boolean)]);
+  // A thread synced without its campaign email: whatever started it is the topic.
+  if (!campSubj.size && msgs.length && normSubj(msgs[0].subject)) convSubj.add(normSubj(msgs[0].subject));
+  const onTopic = m => {
+    if (fromLead(m) || toLead(m)) return true;
+    const s = normSubj(m.subject);
+    return !s || convSubj.has(s) || (m.ue_type !== 2 && !m.to_email);
+  };
+  for (const m of msgs) m.offtopic = onTopic(m) ? 0 : 1;
+  // Newest trustworthy inbound message: the lead, or an outsider writing on our subject.
+  const target = [...msgs].reverse().find(m => m.ue_type === 2 && !m.offtopic && !isInternalAddr(m.from_email)) || null;
+  /* Answer under OUR subject. Replying to the lead's own reply to the phishing
+     would otherwise send "Re: Document Require Your Signature" — which is what
+     the 6 Oct reply to Nikola went out as. */
+  let subject = target ? target.subject || '' : '';
+  if (campSubj.size && !campSubj.has(normSubj(subject))) {
+    const first = msgs.find(m => m.ue_type === 1 && normSubj(m.subject));
+    if (first) subject = first.subject;
+  }
+  if (subject && !subject.trim().toLowerCase().startsWith('re:')) subject = 'Re: ' + subject.trim();
+  return { target, subject, fromLead };
+}
+
+/* Outreach, by the team's definitions:
+     never contacted          = has an email, and it is in no Instantly campaign
+     contacted, never replied = in at least one Instantly campaign, no reply anywhere
+     replied                  = replied in any campaign
+   "In Instantly" is the mirrored lead list (instantly_leads), or an email we
+   hold that was sent to them (older leads Instantly may have since deleted).
+   "Replied" is ANY reply we know of, on ANY platform: Instantly's reply flag,
+   or a stored conversation tied to the lead by row, email or Instagram handle
+   (a conversation only exists once they replied). crm_replied alone is not
+   enough — it is kept per platform, so a Skool row whose owner replied to an
+   Instagram campaign read as "never replied" while Add to Instantly's review,
+   which looks at conversations, flagged them. Both now use this one rule.
+   Leads without an email are their own filter, not "never contacted". */
+const IL_IN = 'EXISTS (SELECT 1 FROM instantly_leads il WHERE il.email = entries.email_norm)';
+const IL_REPLIED = 'EXISTS (SELECT 1 FROM instantly_leads il WHERE il.email = entries.email_norm AND il.replied = 1)';
+const CONV_ANY = "(EXISTS (SELECT 1 FROM conversations v WHERE v.entry_id = entries.id)"
+  + " OR (entries.email_norm != '' AND EXISTS (SELECT 1 FROM conversations v WHERE v.email = entries.email_norm))"
+  + " OR (COALESCE(NULLIF(entries.platform, ''), 'instagram') = 'instagram' AND entries.handle_norm != ''"
+  + " AND EXISTS (SELECT 1 FROM conversations v WHERE v.handle_norm = entries.handle_norm)))";
+const REPLIED_ANY = `(crm_replied = 1 OR ${IL_REPLIED} OR ${CONV_ANY})`;
+// The same facts per row, for the Outreach tag the grid shows on every lead.
+const IL_COLS = `${IL_IN} AS il_in, ${REPLIED_ANY} AS replied_any`;
+function outreachSql(kind) {
+  if (kind === 'replied') return ` AND ${REPLIED_ANY}`;
+  if (kind === 'no_reply') return ` AND email_norm != '' AND NOT ${REPLIED_ANY} AND (crm_contacted = 1 OR ${IL_IN})`;
+  if (kind === 'never') return ` AND email_norm != '' AND NOT ${REPLIED_ANY} AND crm_contacted = 0 AND NOT ${IL_IN}`;
+  return '';
+}
+
+/* The grid's filters as SQL: everything after "WHERE 1=1". Shared by the grid
+   (/api/entries) and Add to Instantly, which uploads exactly what the grid
+   is showing — so the two can never disagree about who is in the list. */
+function entriesWhere(p) {
+  let sql = '';
+  const args = [];
+  const platF = platformClause(p.get('platform'));
+  if (platF) { sql += ' AND platform = ?'; args.push(platF); }
+  // Only people whose email is also a lead on another platform.
+  if ((p.get('dup') || '') === '1') {
+    sql += " AND email_norm IN (SELECT email_norm FROM entries WHERE email_norm != '' GROUP BY email_norm HAVING COUNT(DISTINCT platform) > 1)";
+  }
+  // Multi-select: repeated or comma-joined values, any of them matches.
+  const owners = multiParam(p, 'owner');
+  /* Every exact-match filter folds case. It costs the index on these
+     columns, but a scan of 24k rows is ~20-40ms here and a filter that
+     silently misses "smm" because the value reads "SMM" is worse. These
+     columns hold no non-ASCII, so lower() is a complete fix for them. */
+  if (owners.length) { sql += ` AND lower(lead_owner) IN (${owners.map(() => '?').join(',')})`; args.push(...owners.map(o => o.toLowerCase())); }
+  const ctry = (p.get('country') || '').trim();
+  // __none__ finds the leads still missing one, which is the useful query
+  // while coverage is partial.
+  if (ctry === '__none__') sql += " AND country = ''";
+  else if (ctry) { sql += ' AND lower(country) = ?'; args.push(ctry.toLowerCase()); }
+  const cat = p.get('category') || '';
+  if (cat) { sql += ' AND lower(category) = ?'; args.push(cat.toLowerCase()); }
+  const stg = p.get('stage') || '';
+  if (stg) { sql += ' AND stage = ?'; args.push(stg); }
+  if (stg === 'Leads') sql += " AND email_norm != ''";
+  // Pipeline position filter — matches the node itself AND everything nested under it.
+  // `__unset` = leads with no position (e.g. Closed/Failed leads missing a
+  // delivery status / reason).
+  const pos = p.get('position') || '';
+  if (pos === '__unset') sql += " AND COALESCE(position, '') = ''";
+  else if (pos) { sql += ' AND (position = ? OR position LIKE ?)'; args.push(pos, pos + '/%'); }
+  // Effective Status/Label = manual pick (stage_data) if set, else the CRM
+  // value. json_valid guards legacy rows whose stage_data is '' (not JSON).
+  const effSD = f => `COALESCE(NULLIF(json_extract(CASE WHEN json_valid(stage_data) THEN stage_data ELSE '{}' END,'$.${f}'),''), crm_${f})`;
+  const stf = p.get('status') || '';
+  if (stf) { sql += ` AND ${effSD('status')} = ?`; args.push(stf); }
+  const lbf = p.get('label') || '';
+  // Two computed pseudo-labels folded into the Label dropdown (replacing the
+  // old signal filter); everything else is a real label match.
+  if (lbf === '__contacted') sql += outreachSql('no_reply');
+  else if (lbf === '__no_email') sql += " AND email_norm = ''";
+  else if (lbf) { sql += ` AND ${effSD('label')} = ?`; args.push(lbf); }
+  /* Campaign (multi): in that campaign's Instantly lead list, or holding a
+     conversation from it — the second covers leads since deleted in Instantly. */
+  const camps = multiParam(p, 'campaign');
+  if (camps.length) {
+    const ph = camps.map(() => '?').join(',');
+    sql += ` AND (EXISTS (SELECT 1 FROM instantly_leads il WHERE il.email = entries.email_norm AND il.campaign_id IN (${ph}))`
+      + ` OR EXISTS (SELECT 1 FROM conversations v WHERE v.campaign_id IN (${ph}) AND (v.entry_id = entries.id OR (entries.email_norm != '' AND v.email = entries.email_norm))))`;
+    args.push(...camps, ...camps);
+  }
+  // Outreach (see outreachSql) and, separately, whether they have an email at all.
+  sql += outreachSql(p.get('outreach') || '');
+  const hasMail = p.get('email') || '';
+  if (hasMail === 'yes') sql += " AND email_norm != ''";
+  else if (hasMail === 'no') sql += " AND email_norm = ''";
+  // Tab views map straight onto the Stage bucket (Leads / Responses / Closed / Failed).
+  const TAB_STAGE = { leads: 'Leads', responses: 'Responses', closed: 'Closed', failed: 'Failed' };
+  const tab = p.get('tab') || '';
+  if (TAB_STAGE[tab]) { sql += ' AND stage = ?'; args.push(TAB_STAGE[tab]); }
+  const q = (p.get('q') || '').trim();
+  if (q) {
+    // handle_norm and email_norm are stored lowercase already.
+    /* '\\' here is ONE backslash in the SQL text. Writing '\' would collapse
+       to '' in JavaScript and SQLite rejects it: "ESCAPE expression must be
+       a single character". */
+    sql += " AND (handle_norm LIKE ? ESCAPE '\\' OR email_norm LIKE ? ESCAPE '\\'"
+      + " OR lower(first_name) LIKE ? ESCAPE '\\' OR lower(p_display) LIKE ? ESCAPE '\\')";
+    const t = likeTerm(q);
+    args.push(t, t, t, t);
+  }
+  // Link-in-bio platform filter ("show me everyone on stan.store").
+  // Matches the stored host exactly, so it uses the index rather than a LIKE scan.
+  const linkDom = (p.get('link_domain') || '').trim().toLowerCase();
+  if (linkDom === '__none__') sql += " AND ig_link_domain = ''";
+  else if (linkDom === '__any__') sql += " AND ig_link_domain != ''";
+  else if (linkDom) { sql += ' AND lower(ig_link_domain) = ?'; args.push(linkDom.toLowerCase()); }
+  // Lead manager filter. '__none__' finds leads with nobody accountable —
+  // which is the useful query, since an owner who is not a CRM user gets none.
+  const mgrs = multiParam(p, 'manager');
+  if (mgrs.length) {
+    const named = mgrs.filter(m => m !== '__none__'), or = [];
+    if (named.length) { or.push(`lower(lead_manager) IN (${named.map(() => '?').join(',')})`); args.push(...named.map(m => m.toLowerCase())); }
+    if (mgrs.includes('__none__')) or.push("lead_manager = ''");
+    sql += ' AND (' + or.join(' OR ') + ')';
+  }
+  // Bio search. See bioWhere for the query language.
+  const bioRaw = (p.get('bio') || '').trim();
+  if (bioRaw) {
+    // Padded so a word at the very start or end of a bio still has a
+    // boundary on both sides.
+    const bw = bioWhere(bioRaw, "(' ' || ig_bio_lc || ' ')");
+    if (bw.sql) { sql += ' AND (' + bw.sql + ')'; args.push(...bw.params); }
+  }
+  /* Demonstrably active: posted in the last 30 days. A blank date fails this
+     comparison, which is intended — 2,893 leads are private, gone, or have
+     no posts, and none of those can be shown to be active. */
+  if ((p.get('active30') || '') === '1') sql += " AND ig_last_post_at >= date('now','-30 day')";
+  const signal = p.get('signal') || '';
+  if (signal === 'prior') sql += ' AND crm_replied = 1';
+  else if (signal === 'contacted') sql += " AND email_norm != '' AND crm_replied = 0";
+  else if (signal === 'master') sql += " AND source = 'master'";
+  else if (signal === 'added') sql += " AND source = 'added'";
+  else if (signal === 'new') sql += " AND source = 'added' AND crm_contacted = 0";
+  else if (signal === 'no_email') sql += " AND email_norm = ''";
+  const { startIso, endIso } = istRange(p.get('from'), p.get('to'));
+  if (startIso) { sql += ' AND created_at >= ?'; args.push(startIso); }
+  if (endIso) { sql += ' AND created_at <= ?'; args.push(endIso); }
+  return { sql, args };
+}
+const multiParam = (p, k) => [...new Set(p.getAll(k).flatMap(v => String(v).split(',')).map(s => s.trim()).filter(Boolean))];
+
 /* One reply, actually sent. Shared by /api/lead/reply and the cron that drains
    scheduled_replies. The thread's latest message is resolved HERE, at send
    time, so a reply that waited threads onto whatever arrived while it waited
@@ -903,25 +1113,22 @@ async function sendReplyNow(env, key, text, user, cc = '', bcc = '') {
      replies since 1 August went to our own inbox, across 305 leads, and
      Instantly's own record for those shows to == from == our sending account.
 
-     The ORDER BY puts the lead's messages first, so this picks their newest;
-     the timestamp fallback only applies if they have never written, which a
-     Unibox conversation cannot be, but keeps the query total. */
-  const last = await env.DB.prepare(
-    `SELECT id, subject, eaccount, ue_type FROM emails
-      WHERE campaign_id=? AND lead_email=?
-      ORDER BY (ue_type = 2) DESC, timestamp_email DESC LIMIT 1`).bind(campaignId, leadEmail).first();
-  if (!last) throw new ApiError(404, 'No conversation found');
-  /* Belt and braces. If the best target is still one of our own messages the
-     lead has never written here (or their reply was not synced), and sending
-     would address us, not them — which is the failure this whole change is
-     about. Refuse loudly instead of sending something nobody receives. */
-  if (last.ue_type !== 2) {
+     Not just the newest inbound either: threadTriage skips messages from
+     strangers on unrelated subjects (replies to phishing sent from our
+     hijacked mailboxes) and from our own team. */
+  const { results: msgs } = await env.DB.prepare(
+    `SELECT id, subject, eaccount, ue_type, from_email, to_email FROM emails
+      WHERE campaign_id=? AND lead_email=? ORDER BY timestamp_email ASC`).bind(campaignId, leadEmail).all();
+  if (!msgs.length) throw new ApiError(404, 'No conversation found');
+  const { target: last, subject } = threadTriage(msgs, leadEmail);
+  /* Belt and braces. With nothing from the lead (or someone writing on their
+     behalf) to answer, sending would address us or a stranger. Refuse loudly
+     instead of sending something the lead never receives. */
+  if (!last) {
     throw new ApiError(409,
-      'No message from this lead to reply to — sending now would go to our own inbox. '
+      'No message from this lead to reply to — sending now would not reach them. '
       + 'Run a sync first; if it persists, reply from Instantly directly.');
   }
-  let subject = last.subject || '';
-  if (!subject.toLowerCase().startsWith('re:')) subject = 'Re: ' + subject;
   const convRow = await env.DB.prepare('SELECT eaccount, ws FROM conversations WHERE key=?').bind(key).first();
   const eaccount = (convRow && convRow.eaccount) || last.eaccount;
   if (!eaccount) throw new ApiError(400, 'No sending account known for this thread');
@@ -962,6 +1169,15 @@ async function sendReplyNow(env, key, text, user, cc = '', bcc = '') {
       'That reply went to our own inbox (' + (landedOn || 'no recipient') + '), not to the lead. '
       + 'They did NOT receive it. This usually means their reply has not synced yet — '
       + 'run a sync and try again, or reply from Instantly directly.');
+  }
+  // And that it went to the person we meant — the lead, or whoever we answered.
+  const meant = [leadEmail, last.from_email].map(x => String(x || '').toLowerCase()).filter(Boolean);
+  if (sent && sent.id && landedOn && !meant.some(a => landedOn.includes(a))) {
+    console.log('reply addressed to someone else', key, landedOn);
+    await touchConv(env, key, user, 'reply_undelivered', landedOn);
+    throw new ApiError(502,
+      'That reply went to ' + landedOn + ', not to the lead (' + leadEmail + '). '
+      + 'Reply from Instantly directly and tell the CRM team.');
   }
   await touchConv(env, key, user, 'reply_sent', text.slice(0, 80));
   await relinkConv(env, key);
@@ -1559,14 +1775,14 @@ async function handleApi(request, env, url) {
     // as a duplicate instead of double-storing.
     const res = await env.DB.prepare(
       `INSERT INTO entries
-        (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, country, country_src, lead_owner, lead_manager, created_by, created_at, source, in_master, stage, position,
+        (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, category_src, country, country_src, lead_owner, lead_manager, created_by, created_at, source, in_master, stage, position,
          crm_known, crm_contacted, crm_replied, crm_status, crm_poc, crm_campaigns,
          crm_last_contact_at, crm_last_reply_at, crm_checked_at,
          platform, p_display, p_audience, p_last_activity, p_price)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(handle_norm) DO NOTHING`)
       .bind(handle, (body.social_url || body.handle || '').trim(), hk.url,
-            emailRaw, email, firstName, notes, category, country, country ? 'manual' : '', ownerName(user), manager, user.username, created, initStage, initPos,
+            emailRaw, email, firstName, notes, category, category ? 'manual' : '', country, country ? 'manual' : '', ownerName(user), manager, user.username, created, initStage, initPos,
             snap.crm_known, snap.crm_contacted, snap.crm_replied, snap.crm_status, snap.crm_poc,
             snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at,
             platform, String(body.p_display || '').trim(), parseCount(body.p_audience),
@@ -1614,99 +1830,13 @@ async function handleApi(request, env, url) {
   if (path === '/api/entries' && method === 'GET') {
     await requireUser(env, request);
     const p = url.searchParams;
-    let sql = 'SELECT * FROM entries WHERE 1=1';
-    const args = [];
-    const platF = platformClause(p.get('platform'));
-    if (platF) { sql += ' AND platform = ?'; args.push(platF); }
-    // Only people whose email is also a lead on another platform.
-    if ((p.get('dup') || '') === '1') {
-      sql += " AND email_norm IN (SELECT email_norm FROM entries WHERE email_norm != '' GROUP BY email_norm HAVING COUNT(DISTINCT platform) > 1)";
-    }
-    const owner = p.get('owner') || '';
-    /* Every exact-match filter folds case. It costs the index on these
-       columns, but a scan of 24k rows is ~20-40ms here and a filter that
-       silently misses "smm" because the value reads "SMM" is worse. These
-       columns hold no non-ASCII, so lower() is a complete fix for them. */
-    if (owner) { sql += ' AND lower(lead_owner) = ?'; args.push(owner.toLowerCase()); }
-    const ctry = (p.get('country') || '').trim();
-    // __none__ finds the leads still missing one, which is the useful query
-    // while coverage is partial.
-    if (ctry === '__none__') sql += " AND country = ''";
-    else if (ctry) { sql += ' AND lower(country) = ?'; args.push(ctry.toLowerCase()); }
-    const cat = p.get('category') || '';
-    if (cat) { sql += ' AND lower(category) = ?'; args.push(cat.toLowerCase()); }
-    const stg = p.get('stage') || '';
-    if (stg) { sql += ' AND stage = ?'; args.push(stg); }
-    if (stg === 'Leads') sql += " AND email_norm != ''";
-    // Pipeline position filter — matches the node itself AND everything nested under it.
-    // `__unset` = leads with no position (e.g. Closed/Failed leads missing a
-    // delivery status / reason).
-    const pos = p.get('position') || '';
-    if (pos === '__unset') sql += " AND COALESCE(position, '') = ''";
-    else if (pos) { sql += ' AND (position = ? OR position LIKE ?)'; args.push(pos, pos + '/%'); }
-    // Effective Status/Label = manual pick (stage_data) if set, else the CRM
-    // value. json_valid guards legacy rows whose stage_data is '' (not JSON).
-    const effSD = f => `COALESCE(NULLIF(json_extract(CASE WHEN json_valid(stage_data) THEN stage_data ELSE '{}' END,'$.${f}'),''), crm_${f})`;
-    const stf = p.get('status') || '';
-    if (stf) { sql += ` AND ${effSD('status')} = ?`; args.push(stf); }
-    const lbf = p.get('label') || '';
-    // Two computed pseudo-labels folded into the Label dropdown (replacing the
-    // old signal filter); everything else is a real label match.
-    if (lbf === '__contacted') sql += " AND email_norm != '' AND crm_replied = 0";
-    else if (lbf === '__no_email') sql += " AND email_norm = ''";
-    else if (lbf) { sql += ` AND ${effSD('label')} = ?`; args.push(lbf); }
-    // Tab views map straight onto the Stage bucket (Leads / Responses / Closed / Failed).
-    const TAB_STAGE = { leads: 'Leads', responses: 'Responses', closed: 'Closed', failed: 'Failed' };
-    const tab = p.get('tab') || '';
-    if (TAB_STAGE[tab]) { sql += ' AND stage = ?'; args.push(TAB_STAGE[tab]); }
-    const q = (p.get('q') || '').trim();
-    if (q) {
-      // handle_norm and email_norm are stored lowercase already.
-      /* '\\' here is ONE backslash in the SQL text. Writing '\' would collapse
-         to '' in JavaScript and SQLite rejects it: "ESCAPE expression must be
-         a single character". */
-      sql += " AND (handle_norm LIKE ? ESCAPE '\\' OR email_norm LIKE ? ESCAPE '\\'"
-        + " OR lower(first_name) LIKE ? ESCAPE '\\' OR lower(p_display) LIKE ? ESCAPE '\\')";
-      const t = likeTerm(q);
-      args.push(t, t, t, t);
-    }
-    // Link-in-bio platform filter ("show me everyone on stan.store").
-    // Matches the stored host exactly, so it uses the index rather than a LIKE scan.
-    const linkDom = (p.get('link_domain') || '').trim().toLowerCase();
-    if (linkDom === '__none__') sql += " AND ig_link_domain = ''";
-    else if (linkDom === '__any__') sql += " AND ig_link_domain != ''";
-    else if (linkDom) { sql += ' AND lower(ig_link_domain) = ?'; args.push(linkDom.toLowerCase()); }
-    // Lead manager filter. '__none__' finds leads with nobody accountable —
-    // which is the useful query, since an owner who is not a CRM user gets none.
-    const mgr = (p.get('manager') || '').trim();
-    if (mgr === '__none__') sql += " AND lead_manager = ''";
-    else if (mgr) { sql += ' AND lower(lead_manager) = ?'; args.push(mgr.toLowerCase()); }
-    // Bio search. See bioWhere for the query language.
-    const bioRaw = (p.get('bio') || '').trim();
-    if (bioRaw) {
-      // Padded so a word at the very start or end of a bio still has a
-      // boundary on both sides.
-      const bw = bioWhere(bioRaw, "(' ' || ig_bio_lc || ' ')");
-      if (bw.sql) { sql += ' AND (' + bw.sql + ')'; args.push(...bw.params); }
-    }
-    /* Demonstrably active: posted in the last 30 days. A blank date fails this
-       comparison, which is intended — 2,893 leads are private, gone, or have
-       no posts, and none of those can be shown to be active. */
-    if ((p.get('active30') || '') === '1') sql += " AND ig_last_post_at >= date('now','-30 day')";
-    const signal = p.get('signal') || '';
-    if (signal === 'prior') sql += ' AND crm_replied = 1';
-    else if (signal === 'contacted') sql += " AND email_norm != '' AND crm_replied = 0";
-    else if (signal === 'master') sql += " AND source = 'master'";
-    else if (signal === 'added') sql += " AND source = 'added'";
-    else if (signal === 'new') sql += " AND source = 'added' AND crm_contacted = 0";
-    else if (signal === 'no_email') sql += " AND email_norm = ''";
-    const { startIso, endIso } = istRange(p.get('from'), p.get('to'));
-    if (startIso) { sql += ' AND created_at >= ?'; args.push(startIso); }
-    if (endIso) { sql += ' AND created_at <= ?'; args.push(endIso); }
+    const wh = entriesWhere(p);
+    let sql = 'SELECT *, ' + IL_COLS + ' FROM entries WHERE 1=1' + wh.sql;
+    const args = wh.args;
     // Capture the WHERE-only query (before ORDER BY / LIMIT) so we can count the
     // exact number of rows matching the CURRENT filter — the denominator the UI
     // shows must reflect the filter, not the whole table.
-    const countSql = sql.replace('SELECT * FROM entries', 'SELECT COUNT(*) n FROM entries');
+    const countSql = 'SELECT COUNT(*) n FROM entries WHERE 1=1' + wh.sql;
     // Surface data-rich leads (with a real first name) first, so the blank
     // handle+email-only imports don't dominate the top of the list.
     sql += " ORDER BY (first_name != '') DESC, created_at DESC, id DESC";
@@ -1731,6 +1861,7 @@ async function handleApi(request, env, url) {
     const head = {
       platform_counts: shared.platform_counts,
       owners: shared.owners,
+      campaigns: shared.campaigns,
       countries: shared.countries,
       // {key,label} pairs — the grid shows label, filters/saves by key.
       statuses: statusRes.results.map(o => ({ key: o.key, label: o.label })),
@@ -2197,7 +2328,9 @@ async function handleApi(request, env, url) {
            email_norm = CASE WHEN entries.source='master' AND excluded.email_norm!='' THEN excluded.email_norm ELSE entries.email_norm END,
            first_name = CASE WHEN entries.source='master' AND excluded.first_name!='' THEN excluded.first_name ELSE entries.first_name END,
            notes      = CASE WHEN entries.source='master' AND excluded.notes!=''      THEN excluded.notes      ELSE entries.notes END,
-           category   = CASE WHEN entries.source='master' AND excluded.category!=''   THEN excluded.category   ELSE entries.category END,
+           -- A category a person set, or the bio re-categorisation, outranks the sheet.
+           category   = CASE WHEN entries.source='master' AND excluded.category!='' AND entries.category_src NOT IN ('manual','bio-ai')
+                             THEN excluded.category ELSE entries.category END,
            lead_owner = CASE WHEN entries.source='master' AND excluded.lead_owner!='' THEN excluded.lead_owner ELSE entries.lead_owner END,
            lead_manager = CASE WHEN entries.source='master' AND excluded.lead_manager!='' THEN excluded.lead_manager ELSE entries.lead_manager END,
            social_url = CASE WHEN entries.source='master' THEN excluded.social_url ELSE entries.social_url END,
@@ -2477,6 +2610,163 @@ async function handleApi(request, env, url) {
     return json({ found: true, fields, extra, campaign_matched: (pick.campaign || '') === campaignId });
   }
 
+  /* ── Add to Instantly ──
+     Whatever the grid's filters show is what gets uploaded: review the ones
+     worth a second look, push the rest into one Instantly campaign. */
+  if (path === '/api/push/options' && method === 'GET') {
+    await requireUser(env, request);
+    // Which leads go is decided by the grid's own filters; this is just the campaign list.
+    const [camps, wss] = await env.DB.batch([
+      env.DB.prepare("SELECT id, name, status, ws, platform, created FROM campaigns ORDER BY created DESC"),
+      env.DB.prepare('SELECT id, name FROM workspaces ORDER BY id'),
+    ]);
+    return json({ campaigns: camps.results, workspaces: wss.results });
+  }
+
+  if (path === '/api/push/preview' && method === 'POST') {
+    await requireUser(env, request);
+    // Exactly the leads the grid is showing: its own filter string, its own WHERE.
+    const wh = entriesWhere(new URLSearchParams(String((body && body.qs) || '')));
+    const { results: all } = await env.DB.prepare(
+      `SELECT id, first_name, handle_norm, email, email_norm, lead_owner, lead_manager, category, created_at, platform, social_url,
+              stage, position, p_display, crm_replied, ${REPLIED_ANY} AS replied_any FROM entries WHERE 1=1${wh.sql} ORDER BY created_at DESC LIMIT 5001`).bind(...wh.args).all();
+    if (all.length > 5000) throw new ApiError(400, 'More than 5,000 leads match these filters — narrow them down first');
+    const leads = all.filter(r => r.email_norm);
+    const noEmail = all.length - leads.length;
+
+    /* Replied before — the same test as the grid's "Responded" tag: a reply in
+       any Instantly campaign, or a conversation tied to the lead (row, email or
+       Instagram handle). The conversation, when we hold one, is what
+       "View conversation" opens. */
+    const conv = new Map();
+    const note = (id, r) => { const c = conv.get(id); if (!c || (r.last_msg_at || '') > (c.last_msg_at || '')) conv.set(id, r); };
+    const byEmail = new Map(leads.map(r => [r.email_norm, r.id]));
+    const byHandle = new Map(leads.filter(r => (r.platform || IG) === IG).map(r => [r.handle_norm, r.id]));
+    const ids = leads.map(r => r.id);
+    const stmts = [];
+    const COLS = 'v.key, v.entry_id, v.email, v.handle_norm, v.last_msg_at, v.lead_reply_count, v.status, c.name campaign_name';
+    for (let i = 0; i < ids.length; i += 90) {
+      const ch = ids.slice(i, i + 90), em = ch.map(id => leads.find(r => r.id === id).email_norm);
+      stmts.push(env.DB.prepare(`SELECT ${COLS} FROM conversations v LEFT JOIN campaigns c ON c.id=v.campaign_id WHERE v.entry_id IN (${ch.map(() => '?').join(',')})`).bind(...ch));
+      stmts.push(env.DB.prepare(`SELECT ${COLS} FROM conversations v LEFT JOIN campaigns c ON c.id=v.campaign_id WHERE v.email IN (${em.map(() => '?').join(',')})`).bind(...em));
+    }
+    const hs = [...byHandle.keys()].filter(Boolean);
+    for (let i = 0; i < hs.length; i += 90) {
+      const ch = hs.slice(i, i + 90);
+      stmts.push(env.DB.prepare(`SELECT ${COLS} FROM conversations v LEFT JOIN campaigns c ON c.id=v.campaign_id WHERE v.handle_norm IN (${ch.map(() => '?').join(',')})`).bind(...ch));
+    }
+    // Pushed by this button before — kept in the activity log, one row per lead.
+    const pushed = new Map();
+    for (let i = 0; i < ids.length; i += 90) {
+      const ch = ids.slice(i, i + 90).map(id => 'entry:' + id);
+      stmts.push(env.DB.prepare(`SELECT lead_key, detail, created_at FROM activity WHERE kind='instantly_push' AND lead_key IN (${ch.map(() => '?').join(',')})`).bind(...ch));
+    }
+    for (const res of stmts.length ? await env.DB.batch(stmts) : []) {
+      for (const r of res.results) {
+        if (r.lead_key) { const id = Number(r.lead_key.slice(6)); const p = pushed.get(id); if (!p || r.created_at > p.created_at) pushed.set(id, r); continue; }
+        if (r.entry_id && ids.includes(r.entry_id)) note(r.entry_id, r);
+        if (byEmail.has(r.email)) note(byEmail.get(r.email), r);
+        if (r.handle_norm && byHandle.has(r.handle_norm)) note(byHandle.get(r.handle_norm), r);
+      }
+    }
+    const out = leads.map(r => {
+      const c = conv.get(r.id), p = pushed.get(r.id);
+      const flags = [];
+      if (c || r.crm_replied || r.replied_any) flags.push('replied');
+      if (r.stage === 'Failed' || r.stage === 'Closed') flags.push(r.stage.toLowerCase());
+      if (p) flags.push('pushed');
+      return {
+        id: r.id, first_name: r.first_name || '', handle: r.handle_norm, email: r.email || r.email_norm, owner: r.lead_owner, manager: r.lead_manager || '', social_url: r.social_url || '',
+        category: r.category || '', created_at: r.created_at, platform: r.platform || IG, stage: r.stage || '', position: r.position || '',
+        flags, conv_key: c ? c.key : '', conv_campaign: c ? c.campaign_name || '' : '', conv_last: c ? c.last_msg_at || '' : '',
+        pushed_detail: p ? p.detail : '', pushed_at: p ? p.created_at : '',
+      };
+    });
+    return json({ leads: out, no_email: noEmail });
+  }
+
+  if (path === '/api/push/send' && method === 'POST') {
+    const user = await requireUser(env, request);
+    const b = body || {};
+    const camp = await env.DB.prepare('SELECT id, name, ws FROM campaigns WHERE id=?').bind(String(b.campaign_id || '')).first();
+    if (!camp) throw new ApiError(400, 'Pick a campaign');
+    const ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map(Number).filter(Boolean))];
+    if (!ids.length) throw new ApiError(400, 'No leads selected');
+    if (ids.length > 5000) throw new ApiError(400, 'At most 5,000 leads per upload');
+    const rows = [];
+    for (let i = 0; i < ids.length; i += 90) {
+      const ch = ids.slice(i, i + 90);
+      const { results } = await env.DB.prepare(
+        `SELECT id, first_name, handle_norm, email, email_norm, lead_owner, category, platform, social_url, country,
+                ig_followers, ig_avg_views_10, ig_link, p_display, p_audience, lead_manager FROM entries WHERE id IN (${ch.map(() => '?').join(',')})`).bind(...ch).all();
+      rows.push(...results);
+    }
+    /* firstName is Instantly's own field; everything else is a custom
+       variable. "Lead Owner" is the CRM's Lead Owner (lead_manager, always a
+       teammate; the sourcer if none is set), spelled the way the sync reads it
+       back — so a reply from this campaign lands on the right POC. */
+    const handleOf = r => (r.platform || IG) === IG ? '@' + r.handle_norm : String(r.handle_norm || '').replace(/^[a-z0-9]+:(email:)?/, '');
+    const leads = rows.filter(r => r.email_norm).map(r => {
+      const cv = {
+        'Lead Owner': r.lead_manager || r.lead_owner || '',
+        'Primary Social Profile': r.social_url || '',
+        'Username': handleOf(r),
+        'Category': r.category || '',
+        'Followers': r.ig_followers != null ? r.ig_followers : (r.p_audience != null ? r.p_audience : ''),
+        'Avg Views': r.ig_avg_views_10 != null ? r.ig_avg_views_10 : '',
+        'Country': r.country || '',
+        'Bio Link': r.ig_link || '',
+      };
+      return { email: r.email || r.email_norm, first_name: r.first_name || '', custom_variables: cv };
+    });
+    const apiKey = await wsKey(env, camp.ws || 1);
+    const totals = { sent: 0, uploaded: 0, skipped: 0, invalid: 0, blocklisted: 0 };
+    for (let i = 0; i < leads.length; i += 500) {
+      const chunk = leads.slice(i, i + 500);
+      let res;
+      try {
+        res = await instantlyPost(env, '/leads/add', { campaign_id: camp.id, skip_if_in_campaign: false, skip_if_in_workspace: false, leads: chunk }, apiKey);
+      } catch (e) {
+        throw new ApiError(502, `Instantly refused the upload after ${totals.uploaded} leads: ${e.message}`);
+      }
+      totals.sent += chunk.length;
+      totals.uploaded += Number(res.leads_uploaded ?? res.uploaded ?? chunk.length) || 0;
+      totals.skipped += Number(res.skipped_count ?? res.duplicated_leads ?? 0) || 0;
+      totals.invalid += Number(res.invalid_email_count ?? 0) || 0;
+      totals.blocklisted += Number(res.in_blocklist ?? 0) || 0;
+    }
+    // Remember every push, so the next review can say "uploaded before".
+    const now = nowIso(), who = user.display_name || user.username || '';
+    const ins = rows.filter(r => r.email_norm).map(r => env.DB.prepare(
+      'INSERT INTO activity (lead_key, author, kind, detail, created_at) VALUES (?,?,?,?,?)').bind('entry:' + r.id, who, 'instantly_push', camp.name, now));
+    for (let i = 0; i < ins.length; i += 50) await env.DB.batch(ins.slice(i, i + 50));
+    // They are in Instantly now — the Outreach filters should say so at once, not after the next mirror pass.
+    const il = rows.filter(r => r.email_norm).map(r => env.DB.prepare(
+      `INSERT INTO instantly_leads (email, campaign_id, ws, added_at, replied, seen_at) VALUES (?,?,?,?,0,?)
+       ON CONFLICT(email, campaign_id) DO NOTHING`).bind(r.email_norm, camp.id, camp.ws || 1, now, now));
+    for (let i = 0; i < il.length; i += 50) await env.DB.batch(il.slice(i, i + 50));
+    return json({ ok: true, campaign: camp.name, ...totals });
+  }
+
+  /* Which Unibox conversation belongs to this CRM lead. Not just "the thread
+     for their email": a lead's reply is often under a different address than
+     the one on the row — @imanoubou's row says iman@swaaymedia.com while her
+     thread is with iman@vocable.ai, found through the Instagram handle Instantly
+     holds for it. Same matching the CRM uses to say they replied (linked row,
+     email, or Instagram handle), newest thread first. */
+  if (path === '/api/conv/for-entry' && method === 'GET') {
+    await requireUser(env, request);
+    const e = await env.DB.prepare('SELECT id, email_norm, handle_norm, platform FROM entries WHERE id=?')
+      .bind(Number(url.searchParams.get('id')) || 0).first();
+    if (!e) throw new ApiError(404, 'Lead not found');
+    const h = (e.platform || IG) === IG ? normHandle(e.handle_norm || '') : '';
+    const row = await env.DB.prepare(
+      `SELECT key FROM conversations
+        WHERE entry_id = ? OR (? != '' AND email = ?) OR (? != '' AND handle_norm = ?)
+        ORDER BY last_msg_at DESC LIMIT 1`).bind(e.id, e.email_norm || '', e.email_norm || '', h, h).first();
+    return json({ key: row ? row.key : '' });
+  }
+
   // Full email thread for one conversation (+ notes, activity, older campaigns).
   if (path === '/api/thread' && method === 'GET') {
     await requireUser(env, request);
@@ -2493,6 +2783,9 @@ async function handleApi(request, env, url) {
       env.DB.prepare('SELECT id, name FROM campaigns'),
     ]);
     const cur = emailsRes.results;
+    // Flags off-topic messages (offtopic=1) and names who a reply would go to.
+    const triage = threadTriage(cur, leadEmail);
+    const reply_to = triage.target ? triage.target.from_email : '';
     const currentLatest = cur.length ? cur[cur.length - 1].timestamp_email : '';
     const names = Object.fromEntries(campRes.results.map(r => [r.id, r.name]));
     const grouped = new Map();
@@ -2504,7 +2797,7 @@ async function handleApi(request, env, url) {
     const { results: scheduled } = await env.DB.prepare(
       `SELECT id, text, send_at, status, created_by, created_at, error, cc, bcc FROM scheduled_replies
         WHERE lead_key=? AND status IN ('pending','sending','held','failed') ORDER BY send_at`).bind(key).all();
-    return json({ emails: cur, notes: notesRes.results, activity: actRes.results, other_threads, scheduled });
+    return json({ emails: cur, notes: notesRes.results, activity: actRes.results, other_threads, scheduled, reply_to });
   }
 
   // Full lead detail for the in-app conversation popup (READ-ONLY): the entire
@@ -3093,20 +3386,6 @@ async function handleApi(request, env, url) {
     return json({ ok: true, synced });
   }
 
-  // One-time paged relink: link migrated conversations → entries (auto-create
-  // missing people), fixing pipeline counts. Paged by rowid to stay under the
-  // Workers subrequest cap. Driver loops until {done:true}.
-  if (path === '/api/admin/relink' && method === 'POST') {
-    await requireUser(env, request);
-    const after = Number(body.after || 0) || 0;
-    const limit = Math.min(Number(body.limit || 100) || 100, 200);
-    const { results } = await env.DB.prepare(
-      'SELECT rowid AS rid, key FROM conversations WHERE rowid > ? ORDER BY rowid LIMIT ?').bind(after, limit).all();
-    if (!results.length) return json({ done: true, processed: 0, next: after });
-    await linkConversations(env, results.map(r => r.key));
-    return json({ done: results.length < limit, processed: results.length, next: results[results.length - 1].rid });
-  }
-
   // One-time full reconciliation sweep: catch straggler replies the watermark
   // skipped. Cursor-based (reconcile_cursor:{ws}); call repeatedly until
   // {wrapped:true}. Admin only.
@@ -3192,6 +3471,17 @@ async function localCrm(env, email, handle, platform = null) {
             WHERE m.lead_email=? AND m.ue_type IN (1,3) AND COALESCE(NULLIF(c.platform, ''), 'instagram') = ?`).bind(em, platform).first()
       : await env.DB.prepare(
           "SELECT COUNT(*) n, MAX(timestamp_email) last_at FROM emails WHERE lead_email=? AND ue_type IN (1,3)").bind(em).first();
+    if (r && r.n > 0) {
+      signal = { type: 'local', query: em, known: true, contacted: true, replied: false,
+        status: '', poc: '', label: '', first_name: '', campaigns: [], last_contact_at: r.last_at || '', last_reply_at: '' };
+    }
+  }
+  // Still nothing: are they in an Instantly campaign at all? That is "contacted".
+  if (!signal && em) {
+    const r = await env.DB.prepare(
+      `SELECT COUNT(*) n, MAX(il.added_at) last_at FROM instantly_leads il LEFT JOIN campaigns c ON c.id = il.campaign_id
+        WHERE il.email = ?${platform ? " AND COALESCE(NULLIF(c.platform, ''), 'instagram') = ?" : ''}`)
+      .bind(...(platform ? [em, platform] : [em])).first().catch(() => null);
     if (r && r.n > 0) {
       signal = { type: 'local', query: em, known: true, contacted: true, replied: false,
         status: '', poc: '', label: '', first_name: '', campaigns: [], last_contact_at: r.last_at || '', last_reply_at: '' };
@@ -3294,13 +3584,13 @@ async function bulkAdd(env, user, rawRows, platform = IG) {
     const initPos = sug ? sug.position : '';
     return env.DB.prepare(
       `INSERT INTO entries
-        (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, lead_owner, lead_manager, created_by, created_at, source, in_master, stage, position,
+        (handle_norm, handle_raw, social_url, email, email_norm, first_name, notes, category, category_src, lead_owner, lead_manager, created_by, created_at, source, in_master, stage, position,
          crm_known, crm_contacted, crm_replied, crm_status, crm_poc, crm_campaigns,
          crm_last_contact_at, crm_last_reply_at, crm_checked_at,
          platform, p_display, p_audience, p_last_activity, p_price)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'added',0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(handle_norm) DO NOTHING`)
-      .bind(r.handle, r.raw, r.url, r.emailRaw, r.email, r.firstName, r.notes, r.category, ownerName(user), managerOf(ownerName(user)), user.username, created, initStage, initPos,
+      .bind(r.handle, r.raw, r.url, r.emailRaw, r.email, r.firstName, r.notes, r.category, r.category ? 'manual' : '', ownerName(user), managerOf(ownerName(user)), user.username, created, initStage, initPos,
             snap.crm_known, snap.crm_contacted, snap.crm_replied, snap.crm_status, snap.crm_poc,
             snap.crm_campaigns, snap.crm_last_contact_at, snap.crm_last_reply_at, snap.crm_checked_at,
             platform, r.pDisplay, r.pAudience, r.pLast, r.pPrice);
@@ -3401,7 +3691,8 @@ async function editEntry(env, user, body) {
   if ('p_last_activity' in body) { sets.push('p_last_activity=?'); args.push(String(body.p_last_activity || '').trim()); }
   if ('p_price' in body) { sets.push('p_price=?'); args.push(String(body.p_price || '').trim()); }
   if ('notes' in body) { sets.push('notes=?'); args.push(String(body.notes || '').trim()); }
-  if ('category' in body) { sets.push('category=?'); args.push(String(body.category || '').trim()); }
+  // A person chose it: mark it so a bulk re-categorisation never overwrites it.
+  if ('category' in body) { sets.push('category=?', "category_src='manual'"); args.push(String(body.category || '').trim()); }
   // A hand-set country is marked 'manual' so a future re-derive leaves it be.
   if ('country' in body) {
     const c = String(body.country || '').trim();
@@ -3540,5 +3831,8 @@ export default {
     // Its own try: a sync failure must not strand replies that are due.
     try { await runScheduledReplies(env); }
     catch (e) { console.log('scheduled replies failed:', e && e.message); }
+    // Mirror of Instantly's lead list, a few pages a minute (Outreach filters).
+    try { await syncInstantlyLeads(env); }
+    catch (e) { console.log('instantly leads mirror failed:', e && e.message); }
   },
 };

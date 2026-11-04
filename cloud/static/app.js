@@ -640,6 +640,9 @@ function filterParams() {
   const ct = $('country-filter') ? $('country-filter').value : ''; if (ct) p.set('country', ct);
   const stt = $('status-filter') ? $('status-filter').value : ''; if (stt) p.set('status', stt);
   const lbl = $('label-filter') ? $('label-filter').value : ''; if (lbl) p.set('label', lbl);
+  const otr = $('outreach-filter') ? $('outreach-filter').value : ''; if (otr) p.set('outreach', otr);
+  const hm = $('email-filter') ? $('email-filter').value : ''; if (hm) p.set('email', hm);
+  const cpf = $('campaign-filter') ? $('campaign-filter').value : ''; if (cpf) p.set('campaign', cpf);
   // Delivery-status filter applies only on the Closed tab (it's the lead's
   // Closed sub-node / position).
   if (state.tab === 'closed') { const dv = $('delivery-filter') ? $('delivery-filter').value : ''; if (dv) p.set('position', dv); }
@@ -672,6 +675,7 @@ async function loadEntries() {
   state.entries = data.entries; state.version = data.version;
   if (data.platform_counts) { state.platformCounts = data.platform_counts; renderPlatBar(); }
   state.owners = data.owners || [];
+  if (data.campaigns) { state.campaignList = data.campaigns; refreshCampaignFilter(); }
   state.statuses = data.statuses || [];
   state.labels = data.labels || [];
   state.grandTotal = data.grand_total;
@@ -747,9 +751,7 @@ function refreshClassifyFilters() {
     const cur = lbSel.value;
     lbSel.innerHTML = '<option value="">Any label</option>'
       + (state.labels || []).map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')
-      // Two computed pseudo-labels that replaced the old signal filter.
-      + '<option value="__contacted">Contacted — no reply</option>'
-      + '<option value="__no_email">No email on file</option>';
+      ;  // Outreach and Email have their own dropdowns now.
     lbSel.value = cur;
   }
 }
@@ -789,13 +791,9 @@ async function refreshLinkFilter() {
 // rather than from whatever names happen to be in the data. (The field is
 // still lead_manager in the database and API — this is a label change only.)
 function refreshManagerFilter() {
-  const sel = $('manager-filter'); if (!sel) return;
-  const cur = sel.value;
+  const sel = $('manager-filter'); if (!sel || !sel.setOptions) return;
   const team = (state.team || []).slice().sort((a, b) => a.localeCompare(b));
-  sel.innerHTML = '<option value="">Lead owner: anyone</option>'
-    + '<option value="__none__">— No lead owner —</option>'
-    + team.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
-  sel.value = cur;
+  sel.setOptions([{ value: '__none__', label: '— No lead owner —' }, ...team.map(n => ({ value: n, label: n }))]);
 }
 
 /* Countries actually present, commonest first — there is no curated list to
@@ -811,14 +809,59 @@ function refreshCountryFilter() {
   sel.value = cur;
 }
 
+// Campaign names, with the workspace for the ones outside the main workspace
+// (two workspaces can hold campaigns with the same name).
+function refreshCampaignFilter() {
+  const sel = $('campaign-filter'); if (!sel || !sel.setOptions) return;
+  sel.setOptions((state.campaignList || []).map(c => ({ value: c.id, label: c.name + (c.ws && c.ws !== 1 && c.ws_name ? ` · ${c.ws_name}` : '') })));
+}
+
 function refreshOwnerFilter() {
-  const sel = $('owner-filter');
-  const cur = sel.value;
+  const sel = $('owner-filter'); if (!sel || !sel.setOptions) return;
   const owners = (state.owners && state.owners.length)
     ? state.owners
     : [...new Set(state.entries.map(e => e.lead_owner).filter(Boolean))].sort();
-  sel.innerHTML = '<option value="">Added by: anyone</option>' + owners.map(o => `<option>${esc(o)}</option>`).join('');
-  sel.value = cur;
+  sel.setOptions(owners.map(o => ({ value: o, label: o })));
+}
+
+/* A searchable, multi-pick dropdown standing in for a <select>. Same surface
+   the rest of the code already uses: .value (comma-joined picks; '' = any),
+   .onchange, and setOptions([{value,label}]). Picks survive an options
+   refresh, so the background reload never drops what you chose. */
+function mselInit(el) {
+  const label = el.dataset.label || '';
+  el._sel = new Set(); el._opts = [];
+  el.innerHTML = '<button type="button" class="msel-btn"></button>'
+    + '<div class="msel-pop" hidden><input class="msel-q" placeholder="Search…" autocomplete="off">'
+    + '<div class="msel-list"></div><div class="msel-foot"><button type="button" class="msel-clear">Clear</button></div></div>';
+  const btn = el.querySelector('.msel-btn'), pop = el.querySelector('.msel-pop'), q = el.querySelector('.msel-q'), list = el.querySelector('.msel-list');
+  const fire = () => { if (typeof el.onchange === 'function') el.onchange(); };
+  const render = () => {
+    const picked = el._opts.filter(o => el._sel.has(o.value)).map(o => o.label);
+    btn.textContent = `${label}: ` + (!picked.length ? (el.dataset.any || 'anyone') : picked.length <= 2 ? picked.join(', ') : `${picked.length} selected`);
+    btn.classList.toggle('on', picked.length > 0);
+    const t = q.value.trim().toLowerCase();
+    const shown = el._opts.filter(o => !t || o.label.toLowerCase().includes(t));
+    list.innerHTML = shown.map(o => `<label class="msel-row"><input type="checkbox" value="${esc(o.value)}"${el._sel.has(o.value) ? ' checked' : ''}><span>${esc(o.label)}</span></label>`).join('')
+      || '<div class="msel-none">No match</div>';
+  };
+  Object.defineProperty(el, 'value', {
+    get: () => [...el._sel].join(','),
+    set: v => { el._sel = new Set(String(v || '').split(',').filter(Boolean)); render(); },
+  });
+  el.setOptions = opts => { el._opts = opts; render(); };
+  const close = () => { pop.hidden = true; };
+  btn.onclick = () => {
+    document.querySelectorAll('.msel-pop').forEach(p => { if (p !== pop) p.hidden = true; });
+    pop.hidden = !pop.hidden;
+    if (!pop.hidden) { q.value = ''; render(); setTimeout(() => q.focus(), 0); }
+  };
+  q.oninput = render;
+  list.onchange = e => { const v = e.target.value; e.target.checked ? el._sel.add(v) : el._sel.delete(v); render(); fire(); };
+  el.querySelector('.msel-clear').onclick = () => { el._sel.clear(); render(); fire(); };
+  document.addEventListener('mousedown', e => { if (!el.contains(e.target)) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  render();
 }
 
 // IST calendar date (yyyy-mm-dd) of a UTC timestamp — used for the Date cell.
@@ -857,10 +900,17 @@ const SELECT_OPTS = {
   outcome: () => ['Closed', 'Failed', 'In progress', 'No response'],
 };
 
+/* Outreach tag on every lead — the same four states as the Outreach filter:
+   in an Instantly campaign or not, replied or not, or no email at all. */
+const OUTREACH = { responded: ['Responded', 'green'], no_reply: ['Contacted, never replied', 'orange'], never: ['Never contacted', 'blue'], no_email: ['No email', 'gray'] };
+const OUT_COL = { h: 'Outreach', outreach: true, cls: 'otr' };
+const outreachTag = e => { const [l, t] = OUTREACH[e.outreach] || OUTREACH.never; return `<span class="otag ${t}">${l}</span>`; };
+
 // Column model. `e` = edit type ('' / undefined = read-only cell).
 const CORE_COLS = [
   { f: 'date',       h: 'Date',       e: 'date', cls: 'dt' },
   { f: 'first_name', h: 'First Name', e: 'text' },
+  OUT_COL,
   { f: 'social_url', h: 'Username',   e: 'text', cls: 'uname', uname: true },
   { h: 'Primary Social Profile', link: true, cls: 'lnk' },
   { f: 'category',   h: 'Category',   e: 'category', cls: 'cat' },
@@ -930,17 +980,17 @@ const ALSO_COL = { h: 'Also on', also: true, cls: 'also' };
 const PLAT_COL = { h: 'Platform', platCol: true };
 const profileCol = h => ({ f: 'social_url', h, e: 'text', profile: true, cls: 'lnk' });
 const audCol = h => ({ f: 'p_audience', h, e: 'text', aud: true, cls: 'num', sortable: true });
-const P_HEAD = ['date', 'first_name'].map(colOf);
+const P_HEAD = [...['date', 'first_name'].map(colOf), OUT_COL];
 const P_MID = ['category', 'country', 'email'].map(colOf);
 const P_TAIL = ['lead_owner', 'lead_manager', 'stage', 'status', 'label', 'notes', 'CRM'].map(colOf);
 const PLATFORM_COLS = {
   youtube: [...P_HEAD, profileCol('Channel'), { f: 'p_display', h: 'Channel name', e: 'text' }, ALSO_COL, ...P_MID,
             audCol('Subscribers'), { f: 'p_last_activity', h: 'Last upload', e: 'text' }, ...P_TAIL],
   x:       [...P_HEAD, profileCol('Handle'), ALSO_COL, ...P_MID, audCol('Followers'), ...P_TAIL],
-  skool:   [colOf('date'), { ...colOf('first_name'), h: 'Owner' }, profileCol('Community'),
+  skool:   [colOf('date'), { ...colOf('first_name'), h: 'Owner' }, OUT_COL, profileCol('Community'),
             { f: 'p_display', h: 'Community name', e: 'text' }, ALSO_COL, ...P_MID,
             audCol('Members'), { f: 'p_price', h: 'Price', e: 'text' }, ...P_TAIL],
-  all:     [colOf('date'), PLAT_COL, colOf('first_name'), profileCol('Profile'), ALSO_COL, ...P_MID, ...P_TAIL],
+  all:     [colOf('date'), PLAT_COL, colOf('first_name'), OUT_COL, profileCol('Profile'), ALSO_COL, ...P_MID, ...P_TAIL],
 };
 // Instagram: the existing set, with "Also on" beside the profile link.
 const IG_COLS = (() => { const out = []; for (const c of CORE_COLS) { out.push(c); if (c.link) out.push(ALSO_COL); } return out; })();
@@ -1021,6 +1071,7 @@ function cellDisplay(e, c) {
   }
   if (c.aud) { const v = e[c.f]; return v === null || v === undefined || v === '' ? ph : esc(fmtCount(Number(v))); }
   if (c.link) return e.social_url ? `<a href="${esc(e.social_url)}" target="_blank" rel="noopener">${esc(e.social_url.replace(/^https?:\/\//, ''))}</a>` : ph;
+  if (c.outreach) return outreachTag(e);
   if (c.status) return statusChipHtml(e);
   if (c.f === 'status') { const l = statusLabel(e.status); return l ? `<span class="crumb">${esc(l)}</span>` : '<span class="ph">— set —</span>'; }
   if (c.f === 'label') return e.label ? `<span class="crumb">${esc(e.label)}</span>` : '<span class="ph">— set —</span>';
@@ -1281,14 +1332,10 @@ function renderEntries() {
 }
 
 function statusChipHtml(e) {
-  let tone = 'green', label = 'New';
-  if (e.crm && e.crm.replied) { tone = 'red'; label = 'Prior convo'; }
-  else if (e.crm && e.crm.contacted) { tone = 'orange'; label = 'No reply'; }
-  else if (e.in_master) { tone = 'blue'; label = 'In records'; }
-  const view = e.view_conversation ? ` <a class="vc" href="${esc(e.view_conversation)}" target="_blank" rel="noopener" title="View conversation">↗</a>` : '';
-  const st = (e.crm && e.crm.status) ? ` <span class="stx" title="CRM status">${esc(e.crm.status)}</span>` : '';
+  const st =(e.crm && e.crm.status) ? ` <span class="stx" title="CRM status">${esc(e.crm.status)}</span>` : '';
   const poc = (e.crm && e.crm.poc) ? `<span class="pocmini">POC: ${esc(e.crm.poc)}</span>` : '';
-  return `<span class="chip ${tone}">${label}</span>${st}${poc}`;
+  // The New / No reply chip is gone: the Outreach column says that now.
+  return `${st}${poc}` || '<span class="ph">—</span>';
 }
 
 function rowHtml(e, cols, idx) {
@@ -1855,6 +1902,11 @@ async function runDeepLink() {
      where the CRM row that holds both is already in hand. The lead stays
      searched behind the frame, so closing the Unibox leaves you on them. */
   if (kind === 'conv') {
+    /* Ask for the thread itself, not the thread "for this email": the reply
+       often sits under another address than the row's, matched by handle. */
+    let convKey = '';
+    try { convKey = (await api('/api/conv/for-entry?id=' + e.id)).key || ''; } catch (err) {}
+    if (convKey) { switchView('unibox', '?key=' + encodeURIComponent(convKey)); return; }
     if (!e.email) { toast(who + ' has no email address, so there is no thread to open'); return; }
     switchView('unibox', '?lead=' + encodeURIComponent(e.email));
     return;
@@ -2547,7 +2599,8 @@ function exportCsv() {
     // social_url directly — so without this it exported as an empty column.
     if (c.link) return csvCell(e.social_url || '');
     if (c.uname) return csvCell(e.handle || '');
-    if (c.status) return csvCell([e.crm && e.crm.replied ? 'replied' : '', e.crm && e.crm.contacted ? 'contacted' : ''].filter(Boolean).join(' ') || 'new');
+    if (c.outreach) return csvCell((OUTREACH[e.outreach] || OUTREACH.never)[0]);
+    if (c.status) return csvCell((e.crm && e.crm.status) || '');
     if (c.f === 'date') return csvCell(istYmd(e.created_at));
     if (c.deal) return csvCell((e.deal && e.deal[c.f]) || '');
     if (c.f === 'status') return csvCell(statusLabel(e.status) || '');
@@ -2759,7 +2812,7 @@ function wire() {
      the date range — then reload. The tab (stage) is not a filter here: it is
      which list you are looking at, so it deliberately stays put. */
   $('clear-filters').onclick = () => {
-    ['search', 'bio-search', 'status-filter', 'label-filter', 'delivery-filter', 'reason-filter',
+    ['search', 'bio-search', 'status-filter', 'label-filter', 'outreach-filter', 'email-filter', 'campaign-filter', 'delivery-filter', 'reason-filter',
      'cat-filter', 'country-filter', 'owner-filter', 'manager-filter', 'link-filter',
      'date-from', 'date-to'].forEach(id => { const e = $(id); if (e) e.value = ''; });
     markPreset('all');
@@ -2767,6 +2820,8 @@ function wire() {
     state.dupOnly = false; $('dup-only').classList.remove('toggle-on'); $('dup-only').setAttribute('aria-pressed', 'false');
     loadEntries();
   };
+  document.querySelectorAll('.msel').forEach(mselInit);
+  refreshOwnerFilter(); refreshManagerFilter(); refreshCampaignFilter();
   $('owner-filter').onchange = loadEntries;
   if ($('link-filter')) $('link-filter').onchange = loadEntries;
   $('bio-search').addEventListener('input', debounce(loadEntries, 350));
@@ -2785,6 +2840,9 @@ function wire() {
   };
   $('status-filter').onchange = loadEntries;
   $('label-filter').onchange = loadEntries;
+  $('outreach-filter').onchange = loadEntries;
+  $('email-filter').onchange = loadEntries;
+  $('campaign-filter').onchange = loadEntries;
   $('delivery-filter').onchange = loadEntries;
   $('reason-filter').onchange = loadEntries;
   if ($('manager-filter')) $('manager-filter').onchange = loadEntries;
@@ -2793,6 +2851,7 @@ function wire() {
   // Add-lead modal
   $('open-add-btn').onclick = () => { prepareAddForm(); $('add-bg').classList.add('open'); setTimeout(() => $('f-social').focus(), 60); };
   $('add-close').onclick = () => $('add-bg').classList.remove('open');
+  $('push-open-btn').onclick = openPush;
 
   // Close / Fail popups
   $('cl-save').onclick = saveClose;
@@ -2942,3 +3001,220 @@ wire();
     $('login-view').style.display = 'flex';
   });
 })(0);
+
+/* ── Add to Instantly ──────────────────────────────────────────────
+   The CRM's filters choose the leads — whatever the grid is showing, on
+   whatever tab and platform. This screen is just: review the ones worth a
+   second look (replied before / Failed / Closed / uploaded before), then pick
+   a campaign. Right side: exactly who will be uploaded. */
+const push = { opts: null, leads: [], pick: new Set(), camp: '', step: 2, qs: '' };
+
+function pushStep(n) {
+  push.step = n;
+  for (const k of [2, 3, 4]) $('push-s' + k).hidden = k !== n;
+  document.querySelectorAll('#push-steps span').forEach(s => {
+    s.classList.toggle('on', +s.dataset.s === n); s.classList.toggle('done', +s.dataset.s < n);
+  });
+  renderPushRight();
+}
+
+async function openPush() {
+  const btn = $('push-open-btn'), old = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Checking leads…';
+  try {
+    push.qs = filterParams().toString();
+    const [d, o] = await Promise.all([
+      api('/api/push/preview', { method: 'POST', body: { qs: push.qs } }),
+      push.opts ? Promise.resolve(push.opts) : api('/api/push/options'),
+    ]);
+    push.opts = o;
+    if (!d.leads.length) { toast(d.no_email ? `None of these ${d.no_email} leads has an email` : 'No leads match the current filters'); return; }
+    push.leads = d.leads; push.noEmail = d.no_email; push.camp = '';
+    push.pick = new Set(d.leads.filter(l => !l.flags.length).map(l => l.id));
+    $('push-from-filters').textContent = `The ${(d.leads.length + d.no_email).toLocaleString()} leads matching the CRM's current filters${state.platform && state.platform !== 'all' ? ' on ' + platName(state.platform) : ''}. Change the filters to change who is in here.`;
+    renderPushS2();
+    $('push-bg').hidden = false;
+    requestAnimationFrame(() => $('push-bg').classList.add('open'));
+    pushStep(2);
+  } catch (e) { toast(e.message); }
+  finally { btn.disabled = false; btn.textContent = old; }
+}
+function closePush() {
+  $('push-bg').classList.remove('open');
+  setTimeout(() => { $('push-bg').hidden = true; $('push-thread-bg').hidden = true; }, 220);
+}
+
+const whoOf = l => l.platform === 'instagram' ? '@' + l.handle : String(l.handle || '').replace(/^[a-z0-9]+:(email:)?/, '');
+const profileLink = l => l.social_url
+  ? `<a href="${esc(l.social_url)}" target="_blank" rel="noopener">${esc(l.social_url.replace(/^https?:\/\/(www\.)?/, ''))}</a>` : '';
+
+function renderPushRight() {
+  const sel = push.leads.filter(l => push.pick.has(l.id));
+  $('push-rnum').textContent = sel.length.toLocaleString();
+  $('push-rsub').textContent = sel.length === 1 ? 'lead' : 'leads';
+  $('push-rlist').innerHTML = sel.slice(0, 300).map(l => `<div class="push-rrow"><div class="push-rname"><b>${esc(l.first_name || whoOf(l))}</b></div>
+      <div class="push-hint">${esc(whoOf(l))}${l.category ? ' · ' + esc(l.category) : ''}</div></div>`).join('')
+    + (sel.length > 300 ? `<div class="push-hint push-more">+ ${(sel.length - 300).toLocaleString()} more</div>` : '');
+}
+
+const FLAG_TXT = { replied: 'Replied before', failed: 'Failed', closed: 'Closed', pushed: 'Uploaded before' };
+function pushRow(l) {
+  const pills = l.flags.map(f => `<span class="push-flag ${f}">${FLAG_TXT[f]}</span>`).join('');
+  const why = [
+    l.conv_key ? `Last message ${fmtDate(l.conv_last)} · ${esc(l.conv_campaign || 'campaign')}`
+      : l.flags.includes('replied') ? 'Replied in Instantly — that thread is not stored in the CRM' : '',
+    l.flags.includes('pushed') ? `Uploaded to <b>${esc(l.pushed_detail)}</b> on ${fmtDate(l.pushed_at)}` : '',
+    (l.flags.includes('failed') || l.flags.includes('closed')) && l.position ? esc(l.position.replace(/^[^/]+\//, '').replace(/_/g, ' ')) : '',
+  ].filter(Boolean).join(' · ');
+  return `<div class="push-row${l.flags.length ? ' flagged' : ''}" data-id="${l.id}">
+    <label class="push-tick"><input type="checkbox" data-pick="${l.id}"${push.pick.has(l.id) ? ' checked' : ''}></label>
+    <div class="push-who"><div><b>${esc(l.first_name || whoOf(l))}</b> <span class="push-hint">${esc(l.email)} · ${esc(l.manager || l.owner)}${l.category ? ' · ' + esc(l.category) : ''}</span></div>
+      ${profileLink(l) ? `<div class="push-prof">${profileLink(l)}</div>` : ''}
+      ${pills ? `<div class="push-pills">${pills}${why ? `<span class="push-hint">${why}</span>` : ''}</div>` : ''}
+      ${l.conv_key ? `<button class="push-link" data-thread="${esc(l.conv_key)}" data-who="${esc(l.first_name || whoOf(l))}">View conversation</button>` : ''}
+    </div></div>`;
+}
+
+/* Both lists fold away. Open state is kept across re-renders (ticking a box
+   re-renders), so a list never snaps shut under your cursor. */
+const pushOpen = { flagged: true, ready: false };
+function pushSection(group, title, hint, list) {
+  if (!list.length) return '';
+  return `<details class="push-sec-box" data-group="${group}"${pushOpen[group] ? ' open' : ''}>
+    <summary><span class="fsec-title">${title} · ${list.length.toLocaleString()}</span><span class="push-hint">${hint}</span>
+      <button class="push-link push-tickall" data-tick="${group}"></button></summary>
+    <div class="push-list">${list.slice(0, 500).map(pushRow).join('')}</div>
+    ${list.length > 500 ? `<div class="push-hint push-more">Showing 500 of ${list.length.toLocaleString()} — Tick all / Untick all still apply to every one.</div>` : ''}
+  </details>`;
+}
+function renderPushS2() {
+  const L = push.leads, flagged = L.filter(l => l.flags.length), ready = L.filter(l => !l.flags.length);
+  const n = f => L.filter(l => l.flags.includes(f)).length;
+  const tile = (num, label, cls) => `<div class="stat-tile ${cls || ''}"><div class="n">${num.toLocaleString()}</div><div class="l">${label}</div></div>`;
+  $('push-tiles').innerHTML = tile(ready.length, 'Ready to upload', 'green') + tile(n('replied'), 'Replied before')
+    + tile(n('failed') + n('closed'), 'Failed / Closed') + tile(n('pushed'), 'Uploaded before')
+    + (push.noEmail ? tile(push.noEmail, 'No email — left out') : '');
+  $('push-flagged').innerHTML = flagged.length
+    ? pushSection('flagged', 'Needs a decision', 'Unticked = not uploaded. Tick anyone who should go anyway.', flagged)
+    : `<div class="push-ok">Nobody here has replied before, been closed or failed, or been uploaded already.</div>`;
+  $('push-ready').innerHTML = pushSection('ready', 'Ready to upload', 'Ticked = uploaded.', ready);
+  pushCounts();
+}
+const pushGroup = g => push.leads.filter(l => g === 'flagged' ? l.flags.length : !l.flags.length);
+function pushCounts() {
+  document.querySelectorAll('#push-s2 [data-tick]').forEach(b => {
+    b.textContent = pushGroup(b.dataset.tick).every(l => push.pick.has(l.id)) ? 'Untick all' : 'Tick all';
+  });
+  const t = `${push.pick.size.toLocaleString()} selected`;
+  $('push-count2').textContent = t; $('push-count3').textContent = t;
+  $('push-next2').disabled = !push.pick.size;
+  renderPushRight();
+}
+
+/* The whole thread in a pop-up: every message, oldest first, in full. The
+   quoted history inside each reply folds away — those messages are already
+   shown in their own right — but one click shows it. */
+function threadText(m) {
+  let t = String(m.body_text || '');
+  if (!t.trim() && m.body_html) {
+    const d = new DOMParser().parseFromString(String(m.body_html).replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|tr)>/gi, '\n'), 'text/html');
+    t = d.body.textContent || '';
+  }
+  if (!t.trim()) t = m.preview || '';
+  t = t.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  // "On <date> <name> <addr> wrote:" is often wrapped over two lines.
+  const cut = t.search(/\n\s*(On [\s\S]{5,250}?wrote:|-{2,}\s*Original Message|From: .+\n\s*(Sent|Date):)/i);
+  return cut > 0 ? [t.slice(0, cut).trim(), t.slice(cut).trim()] : [t, ''];
+}
+async function openThread(btn) {
+  const box = $('push-thread-body');
+  $('push-thread-title').textContent = btn.dataset.who || 'Conversation';
+  $('push-thread-camp').textContent = '';
+  box.innerHTML = '<div class="push-hint">Loading…</div>';
+  $('push-thread-bg').hidden = false;
+  try {
+    const d = await api('/api/thread?key=' + encodeURIComponent(btn.dataset.thread));
+    const msgs = d.emails || [];
+    const camp = (push.opts.campaigns.find(c => c.id === btn.dataset.thread.split('|')[0]) || {}).name || '';
+    $('push-thread-camp').textContent = `${camp ? camp + ' · ' : ''}${msgs.length} message${msgs.length === 1 ? '' : 's'}`;
+    box.innerHTML = msgs.map(m => {
+      const [main, quoted] = threadText(m);
+      const them = m.ue_type === 2;
+      return `<div class="push-msg ${them ? 'them' : 'us'}${m.offtopic ? ' off' : ''}">
+        <div class="push-msg-head"><b>${them ? esc(m.from_email || 'Lead') : 'We wrote' + (m.from_email ? ' (' + esc(m.from_email) + ')' : '')}</b>
+          <span class="push-hint">${fmtDate(m.timestamp_email)}${m.subject ? ' · ' + esc(m.subject) : ''}</span>
+          ${m.offtopic ? '<span class="push-flag failed">Not part of this conversation</span>' : ''}</div>
+        <div class="push-msg-text">${esc(main) || '<span class="push-hint">(empty)</span>'}</div>
+        ${quoted ? `<details class="push-quoted"><summary>Show quoted text</summary><div class="push-msg-text">${esc(quoted)}</div></details>` : ''}
+      </div>`;
+    }).join('') || '<div class="push-hint">No messages stored for this conversation.</div>';
+    box.scrollTop = box.scrollHeight;   // newest at the bottom, like a chat
+  } catch (e) { box.innerHTML = `<div class="push-hint">${esc(e.message)}</div>`; }
+}
+
+const CAMP_STATUS = { '0': ['Draft', ''], '1': ['Active', 'on'], '2': ['Paused', ''], '3': ['Completed', 'off'], '-1': ['Accounts unhealthy', 'warn'], '-2': ['Bounce protect', 'warn'], '-99': ['Suspended', 'warn'] };
+function renderPushS3() {
+  const o = push.opts, q = $('push-camp-q').value.trim().toLowerCase();
+  const ws = Object.fromEntries((o.workspaces || []).map(w => [w.id, w.name]));
+  const rank = s => ({ '1': 0, '0': 1, '2': 2 }[String(s)] ?? 3);
+  const list = o.campaigns.filter(c => !q || (c.name || '').toLowerCase().includes(q))
+    .sort((a, b) => rank(a.status) - rank(b.status) || String(b.created || '').localeCompare(String(a.created || '')));
+  $('push-camps').innerHTML = list.map(c => {
+    const [st, cls] = CAMP_STATUS[String(c.status)] || [String(c.status), ''];
+    return `<label class="push-camp${push.camp === c.id ? ' sel' : ''}"><input type="radio" name="push-camp" value="${esc(c.id)}"${push.camp === c.id ? ' checked' : ''}>
+      <span class="push-cname">${esc(c.name)}</span><span class="push-st ${cls}">${st}</span>
+      <span class="push-hint">${esc(ws[c.ws] || '')}${c.platform ? ' · ' + esc(platName(c.platform)) : ''}</span></label>`;
+  }).join('') || '<div class="push-hint" style="padding:14px">No campaign matches.</div>';
+  const c = o.campaigns.find(x => x.id === push.camp);
+  $('push-go').disabled = !c || !push.pick.size;
+  $('push-go').textContent = c ? `Upload ${push.pick.size.toLocaleString()} leads to “${c.name}”` : 'Pick a campaign';
+}
+
+async function pushGo() {
+  const c = push.opts.campaigns.find(x => x.id === push.camp);
+  if (!c) return;
+  const btn = $('push-go'); btn.disabled = true; btn.textContent = 'Uploading…';
+  try {
+    const r = await api('/api/push/send', { method: 'POST', body: { campaign_id: c.id, ids: [...push.pick] } });
+    $('push-result').innerHTML = `<div class="push-tiles">
+      <div class="stat-tile green"><div class="n">${r.uploaded.toLocaleString()}</div><div class="l">added to ${esc(r.campaign)}</div></div>
+      ${r.skipped ? `<div class="stat-tile"><div class="n">${r.skipped}</div><div class="l">already in it — skipped</div></div>` : ''}
+      ${r.invalid ? `<div class="stat-tile"><div class="n">${r.invalid}</div><div class="l">invalid email</div></div>` : ''}
+      ${r.blocklisted ? `<div class="stat-tile"><div class="n">${r.blocklisted}</div><div class="l">on the blocklist</div></div>` : ''}</div>
+      <div class="push-hint">They start getting emails on the campaign's own schedule once it is active.</div>`;
+    pushStep(4);
+  } catch (e) { toast(e.message); renderPushS3(); }
+}
+
+document.addEventListener('click', e => {
+  const t = e.target;
+  if (!t.closest || !t.closest('#push-bg')) return;
+  if (t.closest('[data-thread-close]') || t.id === 'push-thread-bg') { $('push-thread-bg').hidden = true; return; }
+  if (t.closest('[data-push-close]')) return closePush();
+  const tk = t.closest('[data-tick]');
+  if (tk) {
+    e.preventDefault();   // it sits inside a <summary>: tick, don't fold
+    // One button per list: ticks everyone, or — once they all are — unticks everyone.
+    const g = pushGroup(tk.dataset.tick), all = g.every(l => push.pick.has(l.id));
+    g.forEach(l => all ? push.pick.delete(l.id) : push.pick.add(l.id));
+    renderPushS2(); return;
+  }
+  const th = t.closest('[data-thread]'); if (th) { openThread(th); return; }
+  if (t.id === 'push-next2') { renderPushS3(); pushStep(3); setTimeout(() => $('push-camp-q').focus(), 50); return; }
+  if (t.id === 'push-back3') return pushStep(2);
+  if (t.id === 'push-go') return pushGo();
+});
+document.addEventListener('toggle', e => {
+  const d = e.target;
+  if (d.classList && d.classList.contains('push-sec-box')) pushOpen[d.dataset.group] = d.open;
+}, true);
+document.addEventListener('change', e => {
+  const t = e.target;
+  if (t.dataset && t.dataset.pick) { const id = +t.dataset.pick; t.checked ? push.pick.add(id) : push.pick.delete(id); pushCounts(); return; }
+  if (t.name === 'push-camp') { push.camp = t.value; renderPushS3(); }
+});
+document.addEventListener('input', e => { if (e.target.id === 'push-camp-q') renderPushS3(); });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || $('push-bg').hidden) return;
+  if (!$('push-thread-bg').hidden) $('push-thread-bg').hidden = true; else closePush();
+});

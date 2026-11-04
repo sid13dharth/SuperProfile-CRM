@@ -129,6 +129,20 @@
   <div id="list"><div class="empty">Loading…</div></div>
       </div><!-- /view-home -->
 
+      <div id="view-todo" style="display:none">
+        <div class="view-head todo-head">
+          <h2 id="todo-title">My To Do</h2>
+          <select id="todo-who" title="Whose To Do (admins)" hidden></select>
+          <select id="todo-sort" title="Order">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="waiting">Waiting longest first</option>
+          </select>
+        </div>
+        <div class="todo-tiles" id="todo-tiles"></div>
+        <div id="todo-body"><div class="empty">Loading…</div></div>
+      </div>
+
       <div id="view-campaigns" style="display:none">
         <div class="view-head"><h2>Campaigns</h2>
           <span class="view-sub">Pick a campaign and upload a CSV of leads — they're added straight into that Instantly campaign (sequences & settings stay in Instantly).</span></div>
@@ -171,6 +185,7 @@
   </div>
   <div class="drawer-body" id="thread"></div>
   <div class="drawer-foot">
+    <div class="cc-row to-row" id="to-row" hidden><label>To</label><span id="to-addr"></span></div>
     <!-- Above the body, where mail clients put them. Hidden until asked for:
          almost every reply copies nobody. -->
     <div class="cc-row" id="cc-row" hidden>
@@ -385,6 +400,7 @@
 </div>
 
 <div class="toast" id="toast"></div>
+<div id="todo-undo" class="todo-undo" hidden></div>
 <script src="/unibox/app.js"></script>
 </body>
 </html>

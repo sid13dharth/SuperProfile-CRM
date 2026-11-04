@@ -190,6 +190,8 @@ async function refresh() {
   renderList();
   renderSync();
   if (openLeadKey) loadThread(openLeadKey, true);
+  // In To Do, re-read your own list (not the big unassigned one) so handled leads drop off.
+  if (activeView === 'todo') loadTodo(true, false);
 }
 
 function renderSync() {
@@ -319,17 +321,23 @@ const plainLabel = s => String(s).replace(/^[^\p{L}\p{N}]+/u, '');
 function renderTabs() {
   // Ended conversations are out of every count, All included; they have their own tab.
   const total = state.leads.filter(l => l.bucket !== 'ended').length;
-  let html = `<button class="tab ${activeTab === 'all' ? 'active' : ''}" data-tab="all">All<span class="n">${total}</span></button>`;
+  const inbox = activeView !== 'todo';
+  // Your own work first: replies you owe + follow-ups that are due.
+  let html = `<button class="tab todo-tab ${inbox ? '' : 'active'}" data-todo="1" title="Replies and follow-ups waiting on you">To Do<span class="n" id="todo-n">${todo.count || ''}</span></button>`;
+  html += `<button class="tab ${inbox && activeTab === 'all' ? 'active' : ''}" data-tab="all">All<span class="n">${total}</span></button>`;
   for (const [key, label] of TABS) {
     const n = key === 'needs_reply'
       ? (state.counts.first_reply || 0) + (state.counts.in_conversation || 0)
       : (state.counts[key] || 0);
-    html += `<button class="tab ${activeTab === key ? 'active' : ''}" data-tab="${key}">${plainLabel(label)}<span class="n">${n}</span></button>`;
+    html += `<button class="tab ${inbox && activeTab === key ? 'active' : ''}" data-tab="${key}">${plainLabel(label)}<span class="n">${n}</span></button>`;
   }
   $('tabs').innerHTML = html;
   if (activeView === 'home') $('ub-title').textContent = activeTab === 'all' ? 'All Conversations' : plainLabel(BUCKET_NAME[activeTab] || 'Inbox');
   $('tabs').querySelectorAll('.tab').forEach(b =>
-    b.onclick = () => { activeTab = b.dataset.tab; if (activeView !== 'home') switchView('home'); renderTabs(); renderList(); });
+    b.onclick = () => {
+      if (b.dataset.todo) return switchView('todo');
+      activeTab = b.dataset.tab; if (activeView !== 'home') switchView('home'); renderTabs(); renderList();
+    });
 }
 
 function sortLeads(leads) {
@@ -478,7 +486,7 @@ function esc(s) {
 function escAttr(s) { return esc(s); }
 
 /* ── Drawer ─────────────────────────────────────────── */
-function currentLead() { return state.leads.find(l => l.key === openLeadKey); }
+function currentLead() { return state.leads.find(l => l.key === openLeadKey) || (activeView === 'todo' ? todoLead(openLeadKey) : undefined); }
 
 // The open conversation stays highlighted in the list beside it.
 function markOpenRow() {
@@ -488,6 +496,7 @@ function markOpenRow() {
     const row = document.querySelector(`#list .lead[data-key="${CSS.escape(openLeadKey)}"]`);
     if (row) row.classList.add('sel');
   }
+  document.querySelectorAll('.todo-row').forEach(r => r.classList.toggle('sel', r.dataset.row === openLeadKey));
 }
 
 /* The list switches between full width and the narrow column in ONE step —
@@ -969,8 +978,12 @@ function renderMsg(m) {
   const them = m.ue_type === 2;
   const who = them ? esc(m.from_email || 'Lead') : `You (${esc(m.from_email || m.eaccount)})`;
   const clean = linkifyText(cleanMessage(m));
-  return `<div class="msg ${them ? 'them' : 'us'}">
-      <div class="meta"><b>${them ? '📩 ' : '↩️ '}${who}</b> · ${fmtDate(m.timestamp_email)}</div>
+  /* The server flags messages that share the thread but not the conversation —
+     e.g. phishing sent from a hijacked mailbox and strangers' replies to it.
+     Kept visible (it is what happened) but faded, and never replied to. */
+  const off = m.offtopic ? `<span class="offtopic-tag" title="Not to or from this lead, and not on this conversation's subject. Replies never go to it.">Not part of this conversation</span>` : '';
+  return `<div class="msg ${them ? 'them' : 'us'}${m.offtopic ? ' offtopic' : ''}">
+      <div class="meta"><b>${them ? '📩 ' : '↩️ '}${who}</b> · ${fmtDate(m.timestamp_email)}${off}</div>
       <div class="bubble"><div class="msg-text">${clean}</div></div>
     </div>`;
 }
@@ -1041,6 +1054,13 @@ async function loadThread(key, silent) {
   if (key !== openLeadKey) return;
   if (!silent) loadLeadFacts(key);   // not on background refreshes
   renderDrawerHead();
+  // Who "Send reply" will address — chosen by the server, shown so nobody has to guess.
+  const toRow = $('to-row');
+  if (toRow) {
+    toRow.hidden = false;
+    $('to-addr').textContent = data.reply_to || 'nobody yet — no message from this lead to answer';
+    toRow.classList.toggle('none', !data.reply_to);
+  }
 
   let html = '';
 
@@ -1417,14 +1437,17 @@ async function addWorkspace() {
 /* ── Sidebar views: Home / Campaigns / Analytics ────── */
 function switchView(view) {
   activeView = view;
-  $('ub-title').textContent = view === 'campaigns' ? 'Campaigns' : view === 'analytics' ? 'Analytics' : (activeTab === 'all' ? 'All Conversations' : plainLabel(BUCKET_NAME[activeTab] || 'Inbox'));
-  $('ub-sub').textContent = view === 'home' ? 'Newest reply first' : '';
+  $('ub-title').textContent = view === 'campaigns' ? 'Campaigns' : view === 'analytics' ? 'Analytics' : view === 'todo' ? 'To Do' : (activeTab === 'all' ? 'All Conversations' : plainLabel(BUCKET_NAME[activeTab] || 'Inbox'));
+  $('ub-sub').textContent = view === 'home' ? 'Newest reply first' : view === 'todo' ? 'Replies and follow-ups waiting on you' : '';
   document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  renderTabs();
   $('view-home').style.display = view === 'home' ? 'flex' : 'none';
+  $('view-todo').style.display = view === 'todo' ? 'block' : 'none';
   $('view-campaigns').style.display = view === 'campaigns' ? 'block' : 'none';
   $('view-analytics').style.display = view === 'analytics' ? 'block' : 'none';
   if (view === 'campaigns') renderCampaignsView();
   if (view === 'analytics') loadAnalytics();
+  if (view === 'todo') { closeDrawer(); renderTodo(); loadTodo(true); }
 }
 
 function campStatusLabel(s) {
@@ -1858,11 +1881,19 @@ async function init() {
   await refresh();
   startEvents();
   setInterval(renderSync, 30000);
+  // The To Do count in the sidebar: now, then once a minute.
+  loadTodo(false);
+  setInterval(() => loadTodo(activeView === 'todo'), 60000);
 
   // Deep link: /?lead=<email> opens that lead's conversation directly (used by
   // the lead-gen platform's "view conversation" link).
-  const wanted = new URLSearchParams(location.search).get('lead');
-  if (wanted) openLeadByEmail(wanted);
+  const q = new URLSearchParams(location.search);
+  // /?key=<campaign|email> opens that exact thread (the CRM's "Open Conversation").
+  const wantedKey = q.get('key');
+  if (wantedKey && state.leads.some(l => l.key === wantedKey)) openDrawer(wantedKey);
+  else if (wantedKey) toast('That conversation is not in this workspace\'s inbox', true);
+  const wanted = q.get('lead');
+  if (wanted && !wantedKey) openLeadByEmail(wanted);
 }
 
 // Open the conversation for a lead by email (most recent campaign if several).
@@ -2038,3 +2069,176 @@ async function startUnibox(attempt = 0) {
     document.getElementById('boot-fail-msg').textContent = e && e.message ? e.message : 'The server did not answer.';
   }
 }
+
+/* ── To Do ───────────────────────────────────────────────────────
+   One place for a teammate's own work: conversations where they are the POC
+   and the lead is waiting on a reply, follow-ups that are due (we wrote last,
+   3+ days of silence — the same rule as the Follow Up Now tab), and the
+   conversations nobody owns yet, which anyone can claim. Each row can be
+   opened, or closed / failed / ended right here; those apply after a few
+   seconds so a slip can be undone. Members see their own To Do; admins can
+   switch to anyone's. */
+const todo = { who: '', sort: 'newest', mine: null, unassigned: null, held: new Map(), seq: 0, count: 0, open: {} };
+const TODO_REPLY = new Set(['first_reply', 'in_conversation']);
+const FAIL_REASONS = [['out_of_budget', 'Out of budget'], ['poor_quality', 'Poor quality lead'], ['ghosted', 'Ghosted'], ['deliverables', 'Not agreeing to deliverables']];
+const myPoc = () => (me ? (me.display_name || me.username) : '');
+const todoWho = () => todo.who || myPoc();
+
+async function loadTodo(render, withUnassigned = render) {
+  const who = todoWho(); if (!who) return;
+  const mine = ++todo.seq;
+  try {
+    const base = '/api/state?ws=' + activeWs + '&poc=';
+    const [a, u] = await Promise.all([api(base + encodeURIComponent(who)), withUnassigned ? api(base + 'unassigned') : Promise.resolve(null)]);
+    if (mine !== todo.seq) return;
+    // Nothing changed on a background refresh: leave the page (and any open menu) alone.
+    const sig = a.leads.map(l => l.key + l.bucket).join('|');
+    if (!withUnassigned && sig === todo.sig) return;
+    todo.sig = sig;
+    todo.mine = a.leads;
+    if (u) todo.unassigned = u.leads;
+  } catch (e) { if (render) toast('Could not load To Do — ' + e.message, true); return; }
+  if (who === myPoc()) updateTodoBadge(todo.mine);
+  if (render && activeView === 'todo') { renderTodo(); markOpenRow(); }
+}
+/* What is waiting, split by how recent it is. The To Do counts only the last
+   30 days — most "pending" conversations are months old and would bury today's
+   work; those sit in a Backlog section instead. */
+const TODO_DAYS = 30;
+const todoStamp = l => (l.bucket === 'followup_due' ? (l.last_our_msg_at || l.last_msg_at) : (l.last_lead_msg_at || l.last_msg_at)) || '';
+function todoSplit(list) {
+  const cut = new Date(Date.now() - TODO_DAYS * 864e5).toISOString();
+  const live = (list || []).filter(l => !todo.held.has(l.key));
+  const recent = l => todoStamp(l) >= cut;
+  const reply = live.filter(l => TODO_REPLY.has(l.bucket)), follow = live.filter(l => l.bucket === 'followup_due');
+  return { reply: reply.filter(recent), follow: follow.filter(recent), oldReply: reply.filter(l => !recent(l)), oldFollow: follow.filter(l => !recent(l)) };
+}
+function updateTodoBadge(list) {
+  const s = todoSplit(list);
+  todo.count = s.reply.length + s.follow.length;
+  if ($('todo-n')) $('todo-n').textContent = todo.count || '';
+}
+function todoSorted(list) {
+  if (todo.sort === 'waiting') return [...list].sort((a, b) => (b.days_waiting || 0) - (a.days_waiting || 0));
+  const dir = todo.sort === 'oldest' ? 1 : -1;
+  return [...list].sort((a, b) => dir * todoStamp(a).localeCompare(todoStamp(b)));
+}
+const waitTxt = d => d == null ? '' : d < 1 ? 'today' : Math.floor(d) === 1 ? '1 day' : Math.floor(d) + ' days';
+
+function todoRow(l, kind) {
+  const name = l.first_name || (l.email || '').split('@')[0];
+  const who = [l.email, l.campaign_name].filter(Boolean).map(esc).join(' · ');
+  const isFollow = l.bucket === 'followup_due';
+  const wait = isFollow ? `No answer for ${waitTxt(l.days_waiting)}` : `Waiting ${waitTxt(l.days_waiting)}`;
+  const acts = kind === 'unassigned'
+    ? `<button class="todo-btn primary" data-claim="${escAttr(l.key)}">Claim</button>`
+    : `<button class="todo-btn" data-act="closed" data-key="${escAttr(l.key)}">Closed</button>
+       <div class="todo-dd"><button class="todo-btn" data-failmenu="${escAttr(l.key)}">Failed ▾</button>
+         <div class="todo-menu" hidden>${FAIL_REASONS.map(([k, t]) => `<button data-fail="${k}" data-key="${escAttr(l.key)}">${esc(t)}</button>`).join('')}</div></div>
+       <button class="todo-btn" data-act="end" data-key="${escAttr(l.key)}">End conversation</button>`;
+  return `<div class="todo-row" data-row="${escAttr(l.key)}">
+    <div class="todo-main">
+      <div class="todo-name"><b>${esc(name)}</b><span class="todo-wait ${isFollow ? 'f' : ''}">${esc(wait)}</span></div>
+      <div class="todo-sub">${who}</div>
+      ${l.social_url ? `<div class="todo-prof"><a href="${escAttr(l.social_url)}" target="_blank" rel="noopener">${esc(socialHandle(l.social_url))}</a><span>${esc(String(l.social_url).replace(/^https?:\/\/(www\.)?/, '').split('/')[0])}</span>${l.lead_category ? `<span>${esc(l.lead_category)}</span>` : ''}</div>` : ''}
+      ${l.preview ? `<div class="todo-prev">${esc(l.preview)}</div>` : ''}
+    </div>
+    <div class="todo-acts"><button class="todo-btn open" data-open="${escAttr(l.key)}">Open conversation</button>${acts}</div>
+  </div>`;
+}
+/* Long lists show 100 rows and a "Show all" — thousands of rows at once is slow. */
+const todoShowAll = new Set();
+function todoSection(id, title, hint, list, kind, open = true) {
+  const sorted = todoSorted(list), all = todoShowAll.has(id);
+  const rows = (all ? sorted : sorted.slice(0, 100)).map(l => todoRow(l, kind)).join('');
+  const more = !all && sorted.length > 100 ? `<button class="todo-more" data-more="${id}">Show all ${sorted.length}</button>` : '';
+  const body = list.length ? rows + more : `<div class="todo-empty">${kind === 'unassigned' ? 'Nothing unassigned is waiting.' : 'Nothing here — all done ✓'}</div>`;
+  const isOpen = todo.open[id] !== undefined ? todo.open[id] : open;
+  return `<details class="todo-sec" id="${id}"${isOpen ? ' open' : ''}><summary><span class="todo-sec-t">${title}</span><span class="todo-count">${list.length}</span><span class="todo-hint">${hint}</span></summary>${body}</details>`;
+}
+function renderTodo() {
+  const who = todoWho(), isMe = who === myPoc();
+  $('todo-title').textContent = isMe ? 'My To Do' : `${who}'s To Do`;
+  const sel = $('todo-who');
+  if (me && me.is_admin) {
+    sel.hidden = false;
+    const names = [...new Set([myPoc(), ...team])].filter(Boolean);
+    sel.innerHTML = names.map(n => `<option value="${escAttr(n)}">${n === myPoc() ? 'My To Do' : esc(n) + "'s To Do"}</option>`).join('');
+    sel.value = who;
+  }
+  $('todo-sort').value = todo.sort;
+  if (!todo.mine) { $('todo-tiles').innerHTML = ''; $('todo-body').innerHTML = '<div class="empty">Loading…</div>'; return; }
+  const s = todoSplit(todo.mine), u = todoSplit(todo.unassigned || []);
+  const unassigned = [...u.reply, ...u.follow];
+  const backlog = [...s.oldReply, ...s.oldFollow];
+  const tile = (n, label, cls) => `<div class="todo-tile ${cls}"><b>${n}</b><span>${label}</span></div>`;
+  $('todo-tiles').innerHTML = tile(s.reply.length, 'replies to send', 'r') + tile(s.follow.length, 'follow-ups due', 'f')
+    + (todo.unassigned ? tile(unassigned.length, 'unassigned waiting', 'u') : '')
+    + `<div class="todo-note">Last ${TODO_DAYS} days · ${backlog.length} older in Backlog</div>`;
+  $('todo-body').innerHTML =
+      todoSection('todo-reply', 'Reply to these', 'They wrote last — the ball is in your court', s.reply, 'reply')
+    + todoSection('todo-follow', 'Follow up on these', 'You wrote last and they have gone quiet for 3+ days', s.follow, 'follow')
+    + (todo.unassigned ? todoSection('todo-unassigned', 'Unassigned', 'No POC yet — claim it to make it yours', unassigned, 'unassigned') : '')
+    + todoSection('todo-backlog', 'Backlog', `Waiting more than ${TODO_DAYS} days — reply, or close / fail / end to clear it`, backlog, 'backlog', false);
+}
+
+/* Closed / Failed / End wait a few seconds before they are sent, with an Undo. */
+function holdAction(key, label, run) {
+  todo.held.set(key, true);
+  renderTodo(); updateTodoBadge(todo.mine);
+  const bar = $('todo-undo');
+  bar.innerHTML = `<span>${esc(label)}</span><button id="todo-undo-btn">Undo</button>`;
+  bar.hidden = false;
+  const timer = setTimeout(async () => {
+    bar.hidden = true;
+    try { await run(); toast(label + ' ✓'); }
+    catch (e) { toast(e.message, true); }
+    todo.held.delete(key);
+    await loadTodo(activeView === 'todo');
+    refresh();
+  }, 5000);
+  $('todo-undo-btn').onclick = () => { clearTimeout(timer); todo.held.delete(key); bar.hidden = true; renderTodo(); updateTodoBadge(todo.mine); };
+}
+const todoLead = key => [...(todo.mine || []), ...(todo.unassigned || [])].find(l => l.key === key);
+const todoLabel = key => { const l = todoLead(key); return l ? (l.first_name || l.email) : 'Lead'; };
+
+document.addEventListener('click', async e => {
+  const t = e.target;
+  if (!t.closest || !t.closest('#view-todo')) {
+    document.querySelectorAll('.todo-menu').forEach(m => m.hidden = true);
+    return;
+  }
+  const open = t.closest('[data-open]');
+  if (open) return (open.dataset.open === openLeadKey && $('drawer').classList.contains('open')) ? closeDrawer() : openDrawer(open.dataset.open);
+  const more = t.closest('[data-more]'); if (more) { todoShowAll.add(more.dataset.more); return renderTodo(); }
+  const fm = t.closest('[data-failmenu]');
+  if (fm) { const m = fm.nextElementSibling; const was = m.hidden; document.querySelectorAll('.todo-menu').forEach(x => x.hidden = true); m.hidden = !was; return; }
+  const fail = t.closest('[data-fail]');
+  if (fail) {
+    const key = fail.dataset.key, r = fail.dataset.fail, txt = FAIL_REASONS.find(x => x[0] === r)[1];
+    // The inbox records two reasons; the others are kept, word for word, as the note.
+    const data = r === 'out_of_budget' ? { fail_reason: 'out_of_budget' } : { fail_reason: 'other', fail_notes: txt };
+    return holdAction(key, `${todoLabel(key)} marked Failed (${txt})`, () => api('/api/lead/status', { key, status: 'failed', data }));
+  }
+  const act = t.closest('[data-act]');
+  if (act) {
+    const key = act.dataset.key;
+    if (act.dataset.act === 'closed') return holdAction(key, `${todoLabel(key)} marked Closed`, () => api('/api/lead/status', { key, status: 'closed', data: {} }));
+    if (act.dataset.act === 'end') return holdAction(key, `Conversation with ${todoLabel(key)} ended`, () => api('/api/lead/end', { key, end: true }));
+  }
+  // A click on the row itself (not a button or link) opens it too, like the inbox.
+  const row = t.closest('.todo-row');
+  if (row && !t.closest('button, a, .todo-menu')) return (row.dataset.row === openLeadKey && $('drawer').classList.contains('open')) ? closeDrawer() : openDrawer(row.dataset.row);
+  const claim = t.closest('[data-claim]');
+  if (claim) {
+    const key = claim.dataset.claim, who = todoWho();
+    claim.disabled = true; claim.textContent = 'Claiming…';
+    try { await api('/api/lead/poc', { key, poc: who }); toast(`Claimed for ${who} ✓`); await loadTodo(true); refresh(); }
+    catch (err) { toast(err.message, true); claim.disabled = false; claim.textContent = 'Claim'; }
+  }
+});
+document.addEventListener('toggle', e => { const d = e.target; if (d.classList && d.classList.contains('todo-sec')) todo.open[d.id] = d.open; }, true);
+document.addEventListener('change', e => {
+  if (e.target.id === 'todo-sort') { todo.sort = e.target.value; renderTodo(); }
+  if (e.target.id === 'todo-who') { todo.who = e.target.value === myPoc() ? '' : e.target.value; todo.mine = null; renderTodo(); loadTodo(true); }
+});

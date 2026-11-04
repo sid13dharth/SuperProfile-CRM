@@ -12,13 +12,13 @@ Live lead tracker with the old CRM fully merged in — one app, one D1 DB, one l
 - **Live:** https://superprofile-leadgen.superprofile-crm.workers.dev
 - **Code (ground truth):** `D:\SuperProfile.claude\leadgen_platform\cloud\` — Cloudflare Worker `src/worker.js` + vanilla SPA in `static/`. Sibling fallback CRM: `crm_platform\cloud\` (worker+UI still up, cron retired).
 - **Git:** PRIVATE `github.com/sid13dharth/SuperProfile-CRM`, remote `origin`, push from `D:\SuperProfile.claude\leadgen_platform`. `snapshots/` gitignored (lead PII).
-- **Deep history:** session "LEADGEN_HANDOFF platform build" (`local_1e3fcb68-8644-4388-8b5a-2730b8d6080c`, cwd `D:\`, ~5,284 msgs). Page it for anything not in memory `leadgen-platform.md`.
+- **Deep history:** the original "LEADGEN_HANDOFF platform build" session (`local_1e3fcb68…`) **no longer exists**. Work since ~Oct continued in session **"CRM"** (`local_40a7882f-92c2-4609-a526-be73326993f1`) — page that one. Memory `leadgen-platform.md` holds the rest (to 2026-10-19).
 
 ## Infra
 - Cloudflare acct `b9adbd733b7629f367f66d1dacfd1820` (siddharth.pradeep@cosmofeed.com). Token: `leadgen_platform/cloud/cf_token.txt` (gitignored).
 - D1 `superprofile-leadgen`, id `7700f30a-bca0-4d06-b460-45cb6ef1fd03`.
 - Deploy: `cd leadgen_platform/cloud && CLOUDFLARE_API_TOKEN=$(cat cf_token.txt) npx wrangler deploy`
-- Migrations: `... d1 execute superprofile-leadgen --remote --file=migrate_vN.sql` — **ceiling is v9**, no v10+ yet.
+- Migrations: `... d1 execute superprofile-leadgen --remote --file=migrate_vN.sql` — **ceiling is now v24** (was v9 when this file was first written; see "Status 2026-10-30" below).
 - CRM link is a **service binding** `env.CRM`, not public fetch (same-acct Worker→Worker over workers.dev mis-routes POST→GET→404). `LOOKUP_KEY` secret identical on both workers.
 - Two Instantly workspaces: ws1 (main) + ws2 (India); `workspaces.api_key` stored PLAINTEXT in D1. Leadgen cron (`* * * * *`, round-robin 1 ws/tick) is the sole syncer.
 
@@ -37,6 +37,21 @@ Live lead tracker with the old CRM fully merged in — one app, one D1 DB, one l
 - When C: is full, wrangler fails → use the D1 REST API (`POST .../d1/database/<dbid>/query`, Bearer = cf_token.txt) and the secrets REST endpoint.
 - Local dev lock: kill workerd (`Get-Process workerd | Stop-Process -Force`) before `rm -rf .wrangler`.
 - User must click ⟳ **Refresh CRM** to populate status/label/stage/deal across ~21k leads (~2 min).
+
+## Status (2026-10-30) — READ THIS FIRST; sections below are older
+**Since 2026-09-10 (see memory `leadgen-platform.md` for v22/v23 detail):** platforms (v22), HIG redesign, End conversation (v23), threadTriage, extension v1.6.1, exceededMemory streaming fix.
+**Oct 23–29 (session "CRM"):**
+- **migrate_v24** `instantly_leads` — mirror of Instantly's lead list (one row per email per campaign); "Contacted" now = uploaded to Instantly. Kept fresh by `syncInstantlyLeads` (sync.js) and the CRM's "Add to Instantly" action. Live in prod.
+- **Re-categorisation 2026-10-24:** 22,456 IG leads re-categorised from bios (new: UGC Creator, Realtor Coach) — backup `snapshots\category_backup_2026-10-24.json`; 780 YT/Skool leads — `snapshots\category_backup_ytsk_2026-10-24.json`. Deploy `f4f3c3ed`: hand-set categories get `category_src='manual'`; master re-uploads no longer overwrite manual/bio-ai categories. Rules: `leadgen_platform\category_rules.md` (+ memory `lead-category-rules.md`).
+- **Unibox "To Do" tab** (deploy `4cd9c3af`): per-POC replies-owed + follow-ups due (30 d), collapsed Backlog, Unassigned + Claim; Closed / Failed (4 reasons) / End with 5-s Undo; admin picker for a teammate's To Do; primary social link per row; conversation opens inline. Local preview `wrangler dev` → http://localhost:8787.
+- **Community-owners list 2026-10-29:** 437 IG/YT leads who run a creator/business community (Skool & Whop campaigns excluded; 20 yellow "Check"). `snapshots\community_owners_2026-10-29.xlsx`; v2 with "Responded - last convo" sheet (98 responders: 51 waiting on us, 44 on them, 3 no thread) at `C:\Users\Asus\Downloads\community_owners_2026-10-29_v2.xlsx`.
+
+**OPEN (2026-10-30):**
+- **Awaiting user go-ahead:** 656 replied leads not in CRM (475 IG replies with email but no handle; 140 YT + 41 Skool from before platform support). Fix = add keyed by email, attach the 33 matching existing emails, one-time backfill, sync safety net. Needs deploy.
+- Handle mismatch: @theresa.learns stored as @heyytheresaa (email-matched), sitting in Failed although Virat replied Oct 23 → proposal: store alternate Instantly handle on email-matched leads.
+- Maybe drop 3 low-confidence community rows: @michelle.sparkie, @iamsarahsnow, @jessie_affiliatemama.
+- **Git (2026-11-04):** all Oct 19–29 deployed work committed + pushed. That commit also REMOVES the temp `/api/admin/relink` endpoint — **not deployed yet** (auto-mode blocked `wrangler deploy`; user must run/approve it). Live code == repo otherwise.
+- **Older items, triaged 2026-11-04 — none urgent:** `/api/setup` is SAFE (refuses once any user exists; the "admin-seizure" note was stale). `/api/sync` stays login-only on purpose — the Unibox "Sync now" button is shown to every teammate. `/api/admin/platform-migrate` is admin-gated; whether it was run is unknown — check it together with the 140 YT + 41 Skool replied-not-in-CRM item. Server-side paging = perf only, defer.
 
 ## Recent state (2026-09-10)
 migrate_v9 live; `/api/activity` + 📈 Activity modal (teammate-ADDED leads only, `source='added'`, per IST day — reads empty until teammates hand-add); `/api/analytics` from Instantly; email dedup on add; read-only conversation popup on Responses (💬); grid 1000-cap removed (`filtered_total` + `limit=100000`).

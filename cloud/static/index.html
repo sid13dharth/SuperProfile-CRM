@@ -92,6 +92,7 @@
     <div class="tab-tools" id="tab-tools">
       <input id="search" class="tsearch" placeholder="Search handle, name or email…">
     </div>
+    <button class="note-btn push-open-btn" id="push-open-btn" title="Upload CRM leads into an Instantly campaign">Add to Instantly</button>
     <button class="add-lead-btn" id="open-add-btn">Add Lead</button>
   </header>
 
@@ -101,12 +102,15 @@
       <div class="list-controls pops" id="lead-controls">
         <select id="status-filter" title="Filter by status"><option value="">Any status</option></select>
         <select id="label-filter" title="Filter by label"><option value="">Any label</option></select>
+        <select id="outreach-filter" title="Contacted = in an Instantly campaign. Only leads with an email — use the Email filter for the rest."><option value="">Outreach: any</option><option value="no_reply">Contacted, never replied</option><option value="replied">Replied</option><option value="never">Never contacted</option></select>
+        <div id="campaign-filter" class="msel" data-label="Campaign" data-any="any" title="Leads in one or more Instantly campaigns — pick one or more"></div>
+        <select id="email-filter" title="Filter by whether the lead has an email address"><option value="">Email: any</option><option value="yes">Has an email</option><option value="no">No email</option></select>
         <select id="delivery-filter" title="Filter by delivery status" style="display:none"><option value="">Any delivery status</option></select>
         <select id="reason-filter" title="Filter by reason for failure" style="display:none"><option value="">Any reason</option></select>
         <select id="cat-filter"><option value="">Any category</option></select>
         <select id="country-filter" title="Filter by the lead's country"><option value="">Any country</option></select>
-        <select id="owner-filter" title="Filter by who sourced the lead"><option value="">Added by: anyone</option></select>
-        <select id="manager-filter" title="Filter by the CRM teammate who owns the lead"><option value="">Lead owner: anyone</option></select>
+        <div id="owner-filter" class="msel" data-label="Added by" title="Filter by who sourced the lead — pick one or more"></div>
+        <div id="manager-filter" class="msel" data-label="Lead owner" title="Filter by the CRM teammate who owns the lead — pick one or more"></div>
         <select id="link-filter" title="Filter by the platform in their Instagram bio link"><option value="">Any link in bio</option></select>
         <input id="bio-search" class="bio-box" placeholder="Bio search: &quot;ugc coach&quot; -freelance" title="Search Instagram bios. Two words means both. Quotes for an exact phrase, minus to exclude, * for a stem, OR for either.">
         <button class="hbtn bio-help" id="bio-help" title="Search syntax" type="button">?</button>
@@ -492,6 +496,60 @@
 <datalist id="country-list"></datalist>
 
 <!-- Funnel modal -->
+<!-- Add to Instantly: the CRM's own filters pick the leads; this screen is
+     review → campaign. Left (70%) = the steps, right (30%) = who will go. -->
+<div id="push-bg" class="push-screen" hidden>
+  <div class="push-left">
+    <div class="push-top">
+      <div class="push-steps" id="push-steps"><span data-s="2">1 · Review</span><span data-s="3">2 · Campaign</span></div>
+      <button class="push-x" data-push-close title="Close" aria-label="Close">×</button>
+    </div>
+
+    <section id="push-s2" hidden>
+      <h3>Review before uploading</h3>
+      <div class="push-hint" id="push-from-filters"></div>
+      <div class="push-tiles" id="push-tiles"></div>
+      <div id="push-flagged"></div>
+      <div id="push-ready"></div>
+      <div class="push-foot"><span class="push-count" id="push-count2"></span>
+        <button class="note-btn" data-push-close>Cancel</button>
+        <button class="send" id="push-next2">Next: pick campaign</button></div>
+    </section>
+
+    <section id="push-s3" hidden>
+      <h3>Pick a campaign</h3>
+      <input id="push-camp-q" class="push-q" placeholder="Search campaigns…" autocomplete="off">
+      <div class="push-camps" id="push-camps"></div>
+      <div class="push-vars"><div class="fsec-title">What goes to Instantly</div>
+        <div><b>firstName</b> ← First name</div>
+        <div class="push-hint">Custom variables: <b>Lead Owner</b> · <b>Primary Social Profile</b> · Username · Category · Followers · Avg Views · Country · Bio Link</div></div>
+      <div class="push-foot"><span class="push-count" id="push-count3"></span>
+        <button class="note-btn" id="push-back3">Back</button>
+        <button class="send" id="push-go" disabled>Upload</button></div>
+    </section>
+
+    <section id="push-s4" hidden>
+      <h3>Uploaded</h3>
+      <div id="push-result"></div>
+      <div class="push-foot"><span></span><button class="send" data-push-close>Done</button></div>
+    </section>
+  </div>
+
+  <aside class="push-right">
+    <div class="push-rhead"><div class="fsec-title" id="push-rtitle">Will be uploaded</div><div class="push-rnum" id="push-rnum">—</div><div class="push-hint" id="push-rsub"></div></div>
+    <div class="push-rlist" id="push-rlist"></div>
+  </aside>
+
+  <!-- The whole thread, on top of everything. -->
+  <div class="push-thread-bg" id="push-thread-bg" hidden>
+    <div class="push-thread-box">
+      <div class="push-thread-head"><div><div class="fsec-title" id="push-thread-camp"></div><h3 id="push-thread-title"></h3></div>
+        <button class="push-x" data-thread-close aria-label="Close">×</button></div>
+      <div class="push-thread-body" id="push-thread-body"></div>
+    </div>
+  </div>
+</div>
+
 <div id="funnel-bg" class="modal-bg">
   <div class="modal xwide">
     <h3>Funnel analytics</h3>

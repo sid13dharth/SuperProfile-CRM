@@ -807,6 +807,48 @@ async function runFullSync(env) {
   return out;
 }
 
+/* Mirror Instantly's lead list into instantly_leads, a slice per cron tick.
+   Passes run back to back (~32k leads ≈ 480 pages ≈ 12 min at 40 pages a
+   minute), so a lead added straight in Instantly counts within ~15 minutes.
+
+   Writes only what changed: a new lead-in-campaign, or a reply flag that
+   flipped. Re-writing all ~32k rows every pass would be ~4M row writes a day
+   for nothing. Rows are never deleted: someone who was ever uploaded to
+   Instantly was contacted, even if the lead was later removed there.
+   State lives in meta 'il_state' = {ws, after}. */
+const IL_PAGES_PER_TICK = 40;
+async function syncInstantlyLeads(env) {
+  const workspaces = await listWorkspaces(env);
+  if (!workspaces.length) return { idle: 'no workspace' };
+  let st = {};
+  try { st = JSON.parse(await metaGet(env, 'il_state', '{}')) || {}; } catch (e) { st = {}; }
+  if (!workspaces.some(w => w.id === st.ws)) st = { ws: workspaces[0].id, after: '' };
+  let pages = 0, seen = 0, passes = 0;
+  while (pages < IL_PAGES_PER_TICK) {
+    const ws = workspaces.find(w => w.id === st.ws);
+    const body = { limit: 100 };
+    if (st.after) body.starting_after = st.after;
+    const data = await instantlyPost(env, '/leads/list', body, ws.api_key || env.INSTANTLY_API_KEY);
+    pages++;
+    const items = (data && data.items) || [];
+    const now = nowIso();
+    const stmts = items.filter(it => it.email && it.campaign).map(it => env.DB.prepare(
+      `INSERT INTO instantly_leads (email, campaign_id, ws, added_at, replied, seen_at) VALUES (?,?,?,?,?,?)
+       ON CONFLICT(email, campaign_id) DO UPDATE SET replied=excluded.replied, ws=excluded.ws
+       WHERE instantly_leads.replied != excluded.replied OR instantly_leads.ws != excluded.ws`)
+      .bind(normEmail(it.email), it.campaign, st.ws, it.timestamp_created || '', (it.email_reply_count || 0) > 0 ? 1 : 0, now));
+    if (stmts.length) await env.DB.batch(stmts);
+    seen += stmts.length;
+    if (data && data.next_starting_after && items.length) { st.after = data.next_starting_after; continue; }
+    // This workspace is done: on to the next, wrapping round to start a new pass.
+    const i = workspaces.findIndex(w => w.id === st.ws);
+    st = { ws: workspaces[(i + 1) % workspaces.length].id, after: '' };
+    if (i === workspaces.length - 1) { passes++; await metaSetStmt(env, 'il_pass_done', nowIso()).run(); break; }
+  }
+  await metaSetStmt(env, 'il_state', JSON.stringify(st)).run();
+  return { pages, seen, passes };
+}
+
 // Manual single-workspace sync (for a /api/sync button later).
 async function runManualSync(env, ws) {
   const key = await wsKey(env, ws);
@@ -822,5 +864,5 @@ export {
   runFullSync, runManualSync, ensureDefaultWorkspace, listWorkspaces, wsKey,
   recomputeConversations, linkConversations, syncEntriesFromConversations,
   emailUpsertStmt, crmSuggest, INSTANTLY_LABEL_MAP, AUTO_POC_NAMES,
-  instantlyPost, instantlyGet, runRateExtraction, runBodyBackfill, runReplyReconcile, fetchLeadEmails, USD_PER,
+  instantlyPost, instantlyGet, syncInstantlyLeads, runRateExtraction, runBodyBackfill, runReplyReconcile, fetchLeadEmails, USD_PER,
 };
