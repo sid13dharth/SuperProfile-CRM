@@ -1,111 +1,55 @@
-# SuperProfile CRM
+# SuperProfile Team CRM
 
-SuperProfile CRM tracks the **complete funnel for every lead** — from first
-touch, through each pipeline stage, to won or lost — so the team can see
-exactly **where leads leak** and optimize every stage of conversion. Instead of
-a lead being a row that goes stale, the CRM keeps its whole journey in one
-place, making the drop-off points measurable and fixable.
+**A CRM and Chrome extension that work as one system: every lead, from the first message to a closed deal.**
 
-At the top of that funnel, the CRM is a real-time lead-capture tool for the
-lead-gen team. Teammates add leads (Instagram handle + email); every entry is
-stored live and flagged with **two independent signals**:
+An in-house CRM that SuperProfile's global partnerships team uses every day to find creators, reach out, reply, negotiate and close partnerships. Designed and built by **Siddharth Pradeep** (Team Lead, Global Partnerships & Growth) with **Claude Code**, without a dedicated engineering team.
 
-1. **Duplicate by Instagram username** — the CRM's own dedup. Checked
-   against an uploaded **master list** *and* every prior entry, enforced
-   atomically by a `UNIQUE` index on the normalised handle so two teammates
-   adding the same username (even seconds apart) can't both slip through.
-2. **Prior Instantly conversation** — fetched from the **Instantly backend**
-   over HTTPS via `POST /api/lookup` (keyed on email, reliable). Surfaced
-   separately, with a **View conversation** deep link.
+| 20K+ | 5K+ | 60K+ | 100+ |
+|:---:|:---:|:---:|:---:|
+| leads in one shared database | creator conversations | emails of outreach history | campaigns connected |
 
-The two are kept independent (handoff §1, point 4): a username-dup with
-`replied:false` is still reachable — the UI says so.
+---
 
-Each lead also carries an optional **First name** and **Notes**. The leads page
-has a **date-range picker** (with Today / 7d / 30d / All presets) that scopes the
-list and shows a live summary (total leads · with email), and an **Activity**
-dashboard (open to everyone) with a per-member × per-day table of leads found and
-leads-with-email, plus combined daily totals. All "per day" grouping uses **IST
-(UTC+5:30)** day boundaries.
+## Why it exists
 
-Built on **Cloudflare Workers + D1 + a vanilla-JS SPA**. Integration with the
-Instantly backend is pure HTTPS, so the CRM can run under its own Cloudflare
-account.
+As our global outreach grew, the work was spread across 30+ spreadsheets, a cold-email tool and a separate inbox. That caused four problems:
 
-## Layout
+- **Duplicate outreach.** Teammates contacted the same creator twice, because nobody could see who had already spoken to whom.
+- **Missed replies.** Replies sat in a different tool from the lead's details, so they got missed or answered late.
+- **No funnel view.** We couldn't see where deals stalled, so we couldn't tell which campaigns were working.
+- **Lost context.** When someone left, their leads and history left with them.
+
+Off-the-shelf CRMs didn't fit an outreach-heavy, creator-partnership workflow, so we built our own.
+
+## What it does
 
 ```
-cloud/
-  src/worker.js        backend: auth, entries, dedup, master upload, Instantly proxy
-  schema.sql           D1 schema (users, sessions, meta, entries, master_usernames)
-  static/              the SPA (index.html, app.js, style.css)
-  wrangler.jsonc       worker config (edit database_id + CRM_URL)
+Find a lead → Check it's new → Reach out → Reply in one inbox → Negotiate → Close or mark lost
 ```
 
-## Endpoints (all under `/api`)
+- **Shared lead database.** Every lead has an owner, a pipeline stage and its full history in one record.
+- **Duplicate check.** The CRM flags a creator the team already knows the moment someone tries to add them.
+- **Unified inbox.** Email replies sync in automatically, and the team answers them next to the lead's details.
+- **Pipeline and deals.** Leads move through Leads → Responses → Closed / Failed, with rates, deliverables and reasons for lost deals recorded.
+- **Funnel and activity views.** These show which campaigns and segments convert and what each teammate is working on.
+- **Chrome extension (part of the same system).** It works on **Instagram, YouTube and Skool**. On any lead's profile page, teammates can add the lead in one click, see past conversations and the full history the company has with them, without leaving the page.
 
-| Method + path | Purpose |
-|---|---|
-| `GET /me`, `POST /setup`, `POST /login`, `POST /logout` | auth (PBKDF2 + cookie sessions) |
-| `GET /users`, `POST /users` | admin: manage teammates |
-| `POST /check` | live, no-insert preview of both signals for the add form |
-| `POST /entries` | add a lead (`social_url`, `email`, `first_name`, `notes`; atomic dedup + Instantly snapshot) |
-| `GET /entries` | list (filters: `q`, `owner`, `signal=new\|master\|contacted\|prior`, `from`, `to`) |
-| `GET /stats` | date-range totals + per-day + per-member-per-day (leads / with-email), grouped by **IST** day |
-| `DELETE /entries` | delete (owner or admin) |
-| `POST /entries/refresh-crm` | re-check every lead against the Instantly backend |
-| `GET /master/stats`, `POST /master/upload` | admin: the re-uploadable master list |
-| `GET /version` | cheap poll for real-time list refresh |
+## Impact
 
-## Deploy
+**For the team:** no more double outreach, faster replies, clear ownership of every lead, and a single tool for new hires and interns to start in.
 
-From `cloud/`:
+**For the company:** GTM decisions backed by real funnel data (we double down on what converts and cut weak segments), live visibility into pipeline health for leadership, and a permanent record of every conversation, rate and outcome. It costs little to run and has no per-seat CRM fees.
 
-```bash
-# 1. Create the D1 database and paste the printed id into wrangler.jsonc
-npx wrangler d1 create superprofile-leadgen
+## How it was built
 
-# 2. Load the schema (remote)
-npx wrangler d1 execute superprofile-leadgen --remote --file=schema.sql
+Built with AI (Claude Code) and shipped in **20+ iterations** based on teammates' day-to-day feedback.
 
-# 3. Set the Instantly-backend lookup secret (paste the LOOKUP_KEY when prompted)
-npx wrangler secret put LOOKUP_KEY
+<details>
+<summary>Technical overview</summary>
 
-# 4. (CRM_URL is already set as a var in wrangler.jsonc; override there if needed)
+- **Stack:** Cloudflare Workers (backend + API), Cloudflare D1 (SQL database), and a lightweight JavaScript web app.
+- **Integrations:** Instantly (email campaigns and reply sync) and HikerAPI (Instagram profile data).
+- **Extension:** a Chrome extension (Manifest V3) that runs on Instagram, YouTube and Skool profile pages and talks to the CRM.
+- **Layout:** `cloud/src` is the backend, `cloud/static` the web app, `cloud/migrate_v*.sql` the database migrations, and `extension/` the browser extension.
 
-# 5. Deploy
-npx wrangler deploy
-```
-
-Then open the deployed URL — the **first sign-up becomes the admin**. The admin
-uploads the master list and adds teammates under **👥 Team**.
-
-### Secrets / vars
-
-- `LOOKUP_KEY` — **secret**. The Instantly backend's read-only lookup key
-  (provided by Siddharth). Without it, the CRM still runs and does username
-  dedup; the prior-conversation panel just shows "not configured".
-- `CRM_URL` — **var** in `wrangler.jsonc`. Base URL of the Instantly backend;
-  defaults to the live deployment.
-
-## Master list format
-
-CSV or TSV. Any column holding an Instagram handle or profile URL is
-auto-detected (`username`, `handle`, `instagram`, `profile`, `url`, …); an
-optional `email` column is stored too. Single-column files (just handles) work
-with no header. **Excel:** export the sheet as CSV first. Re-uploadable any time
-— "Merge" adds/updates, "Replace" wipes and reloads. Existing entries are
-re-flagged against the refreshed master automatically.
-
-## Local dev
-
-```bash
-cd cloud
-npm install
-npx wrangler d1 execute superprofile-leadgen --local --file=schema.sql
-npx wrangler dev --local
-```
-
-Handle normalisation (lower-case, strip `@`/trailing `/`, extract the handle
-from a full `instagram.com` URL, ignore non-profile paths like `/p/…`) is shared
-by add, check, and master import so a link and a bare handle always match.
+</details>

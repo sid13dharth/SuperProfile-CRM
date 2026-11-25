@@ -37,3 +37,7 @@ unmapped_owners.txt
 
 # Build artifact — rebuild with Compress-Archive from extension/
 superprofile-crm-extension.zip
+
+# Internal working notes — keep local only
+KICKOFF.md
+category_rules.md
